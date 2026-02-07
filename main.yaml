@@ -1,0 +1,11 @@
+# use this file cirectly or copy the content into your own esphome yaml file and adjust the substitutions and packages as needed and per device
+substitutions:
+  name: "onju-voice"
+  friendly_name: "Onju Voice Example Device"
+  project_version: "1.2.0"
+  device_description: "Onju Voice Satellite with ESPHome software and microWakeWord"
+
+packages:
+  - !include onju.yaml
+  - !include wifi.yaml
+  - !include ota.yaml

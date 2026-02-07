@@ -1,4 +1,8 @@
 substitutions:
+  name: "onju-voice"
+  friendly_name: "Onju Voice Common Code"
+  project_version: "1.2.0"
+  device_description: "Common code for the onju voice, to be included in all onju voice devices"
   wakeup_sound_url: "http://192.168.0.202:8123/local/wakeup.flac" # New Notification #7 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/736267/
   error_sound_url: "http://192.168.0.202:8123/local/error.flac" # Error #8 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734442/
   timer_finished_sound_url: "http://192.168.0.202:8123/local/timer_finished.flac" # New Notification #6 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734445/
@@ -90,6 +94,9 @@ logger:
   # initial_level: debug
   # logs:
   #  sensor: WARN
+
+wifi:
+  ssid: to_be_overwritten
 
 captive_portal:
 
@@ -635,11 +642,11 @@ binary_sensor:
                                           announcement: true
                                       - wait_until:
                                           speaker.is_playing:
-                                            id: announcement_spk_resampling_input
+                                            id: onju_out
                                       - wait_until:
                                           not:
                                             speaker.is_playing:
-                                              id: announcement_spk_resampling_input
+                                              id: onju_out
                                       - delay: 100ms
                                       - voice_assistant.start
     - timing: # double click
