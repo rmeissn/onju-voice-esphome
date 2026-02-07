@@ -293,7 +293,7 @@ speaker:
     id: mixer_speaker_id
     output_speaker: onju_out
     num_channels: 2
-    # task_stack_in_psram: true
+    task_stack_in_psram: true
     source_speakers:
       - id: announcement_spk_mixer_input
         timeout: 100ms # Reduced from 200ms

@@ -2,7 +2,7 @@
 
 ESPHome configuration for the original Onju Voice pcb
 
-Code is inspired by https://github.com/tetele/onju-voice-satellite and by an edited version by someone else (will append the link when I find the repo again).
+Code is inspired by https://github.com/tetele/onju-voice-satellite and https://github.com/s00500/onjuconfig and https://github.com/esphome/home-assistant-voice-pe
 
 ## Capabilities
 
@@ -41,4 +41,4 @@ Also, the script for the touch calibration depends heavily on the esphome implem
 
 ## Hardware Limitations
 
-On the Onju, the microphone needs to be stopped on any audio playback and started on non-audio playback, which is a bit hacky. This is necessary as only one I2S bus for both the microphone and speaker exist, while these components need to use different configuration (speaker: 48kHz, microphone: 16kHz). 
+On the Onju, the microphone needs to be stopped on any audio playback and started on non-audio playback, which is a bit hacky. This is necessary as only one I2S bus for both the microphone and speaker exist, while these components need to use different configuration (speaker: 48kHz, microphone: 16kHz).
