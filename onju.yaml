@@ -190,8 +190,8 @@ interval:
 micro_wake_word: # requires 16khz input currently
   microphone:
     microphone: i2s_mics # mww_microphone
-    channels: 1
-    gain_factor: 4 # or maybe 3
+    channels: 0
+    gain_factor: 38 # simple tuning executed, might benefit from more tuning
   stop_after_detection: false
   models:
     - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
@@ -325,7 +325,8 @@ microphone:
     pdm: false
     i2s_mode: primary
     i2s_audio_id: i2s_input
-    channel: stereo
+    channel: right # NOTE stereo destroys signal-noise-ratio (SNR) down to 1-2db. Use right or left to get a better SNR of ~16db (in my tests)
+    correct_dc_offset: True # NOTE needed for the onju microphone, that suffers from DC offsets
     sample_rate: 16000 # default, mic supports 16kHz to 64kHz, captures approx. ~45Hz to ~15kHz -> 16kHz to 32kHz is sufficient, mww and va need 16kHz
     bits_per_sample: 32bit # default, mic only supports 24 bits, TODO: test 16 (implemented) or 24 bit (not implemented?)
 
@@ -437,14 +438,14 @@ voice_assistant: # need to use a 16khz due to mww
   id: va
   microphone:
     microphone: i2s_mics # onju_microphone
-    channels: 1
-    #gain_factor: 4 # or maybe 3
+    channels: 0
+    gain_factor: 38 # simple tuning executed, might benefit from more tuning
   media_player:
   use_wake_word: false
-  # TODO tune the following three parameters
-  #noise_suppression_level: 0 # this is done at the ha side and for recorded audio (activate debug mode to see settings), maybe buggy
-  #auto_gain: 31 dbfs # this is done at the ha side and for recorded audio (activate debug mode to see settings), maybe buggy
-  #volume_multiplier: 3 # this is done at the ha side and for recorded audio (activate debug mode to see settings), maybe buggy
+  # For the following three options: speculative tuning based on input audio, as I can't get the resulting file to analyse
+  noise_suppression_level: 2
+  auto_gain: 10 dbfs
+  volume_multiplier: 1.0
   on_start:
     - mixer_speaker.apply_ducking: # useful if music is started in the background
         id: media_spk_mixer_input
