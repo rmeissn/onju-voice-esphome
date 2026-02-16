@@ -292,8 +292,8 @@ speaker:
     i2s_mode: primary
     i2s_audio_id: i2s_output
     i2s_dout_pin: GPIO12 # SDO / Din
-    buffer_duration: 300ms # increased from 100ms to prevent audio from cutting of on e.g. network issues
-    timeout: 200ms # Reduced from 500ms
+    buffer_duration: 200ms # increased from 100ms to prevent audio from cutting of on e.g. network issues
+    timeout: 150ms # Reduced from 500ms
 
   # Virtual speakers to combine the announcement and media streams together into one output
   - platform: mixer
@@ -444,7 +444,7 @@ media_player:
   - platform: proxy_speaker
     id: proxy_speaker_id
     target: nabu
-    shutdown_delay: 100ms # Reduced as we now wait for speaker
+    shutdown_delay: 50ms
     speaker: onju_out
 
 voice_assistant: # need to use a 16khz due to mww
@@ -666,7 +666,7 @@ binary_sensor:
                                           not:
                                             speaker.is_playing:
                                               id: onju_out
-                                      - delay: 100ms
+                                      - delay: 50ms
                                       - voice_assistant.start
     - timing: # double click
       - ON for at most 0.5s
