@@ -13,6 +13,13 @@ substitutions:
   alarm_sound_url: "http://192.168.0.202:8123/local/alarm.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
 
+external_components:
+  - source:
+      type: local
+      path: components
+    refresh: 0s
+    components: [ proxy_speaker ]
+
 esphome:
   name: "${name}"
   friendly_name: "${friendly_name}"
@@ -110,7 +117,7 @@ api:
         - voice_assistant.start
     - service: start_va_continuous
       then: 
-        voice_assistant.start_continuous
+        - voice_assistant.start_continuous
     - service: stop_va
       then:
         - voice_assistant.stop
@@ -285,7 +292,7 @@ speaker:
     i2s_mode: primary
     i2s_audio_id: i2s_output
     i2s_dout_pin: GPIO12 # SDO / Din
-    buffer_duration: 100ms # default 500ms
+    buffer_duration: 300ms # increased from 100ms to prevent audio from cutting of on e.g. network issues
     timeout: 200ms # Reduced from 500ms
 
   # Virtual speakers to combine the announcement and media streams together into one output
@@ -434,13 +441,19 @@ media_player:
               id: onju_out
       - microphone.capture:
 
+  - platform: proxy_speaker
+    id: proxy_speaker_id
+    target: nabu
+    shutdown_delay: 100ms # Reduced as we now wait for speaker
+    speaker: onju_out
+
 voice_assistant: # need to use a 16khz due to mww
   id: va
   microphone:
     microphone: i2s_mics # onju_microphone
     channels: 0
     gain_factor: 38 # simple tuning executed, might benefit from more tuning
-  media_player:
+  media_player: proxy_speaker_id
   use_wake_word: false
   # For the following three options: speculative tuning based on input audio, as I can't get the resulting file to analyse
   noise_suppression_level: 2
@@ -610,9 +623,11 @@ binary_sensor:
             else:
               - if:
                   condition: 
-                    media_player.is_announcing
+                    media_player.is_announcing:
+                      id: nabu
                   then:
                     - media_player.stop:
+                        id: nabu
                         announcement: true
                   else:
                     - if:
@@ -624,10 +639,13 @@ binary_sensor:
                           - if: # switch between pause/play
                               condition:
                                 or:
-                                  - media_player.is_playing
-                                  - media_player.is_paused
+                                  - media_player.is_playing:
+                                      id: nabu
+                                  - media_player.is_paused:
+                                      id: nabu
                               then:
                                 - media_player.toggle:
+                                    id: nabu
                               else:
                                 - if: # if not paused/playing, activate va
                                     condition:
@@ -684,7 +702,8 @@ binary_sensor:
             effect: pulse
         - voice_assistant.stop
         - micro_wake_word.stop
-        - media_player.stop
+        - media_player.stop:
+            id: nabu
         - microphone.stop_capture
         - mixer_speaker.apply_ducking:
             id: media_spk_mixer_input
