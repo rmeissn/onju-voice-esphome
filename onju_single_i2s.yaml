@@ -13,13 +13,6 @@ substitutions:
   alarm_sound_url: "http://192.168.0.202:8123/local/alarm.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
 
-external_components:
-  - source:
-      type: local
-      path: components
-    refresh: 0s
-    components: [ proxy_speaker ]
-
 esphome:
   name: "${name}"
   friendly_name: "${friendly_name}"
@@ -198,11 +191,12 @@ interval:
                   - script.execute: controle_leds
 
 micro_wake_word: # requires 16khz input currently
+  id: mww
   microphone:
     microphone: i2s_mics # mww_microphone
     channels: 0
     gain_factor: 38 # simple tuning executed, might benefit from more tuning
-  stop_after_detection: false
+  #stop_after_detection: true
   models:
     - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
       id: okay_nabu
@@ -250,6 +244,7 @@ select:
     entity_category: config
     options:
       - Slightly sensitive
+      - Less slightly sensitive
       - Moderately sensitive
       - Very sensitive
     on_value:
@@ -260,6 +255,8 @@ select:
       lambda: |-
         if (x == "Slightly sensitive") {
           id(okay_nabu).set_probability_cutoff(217);    // 0.85 -> 0.000 FAPH on DipCo (Manifest's default)
+        } else if (x == "Less slightly sensitive") {
+          id(okay_nabu).set_probability_cutoff(192);    // ~0.75 -> ??? FAPH on DipCo
         } else if (x == "Moderately sensitive") {
           id(okay_nabu).set_probability_cutoff(176);    // 0.69 -> 0.376 FAPH on DipCo
         } else if (x == "Very sensitive") {
@@ -267,43 +264,31 @@ select:
         }
 
 i2s_audio:
-  - id: i2s_output
-    i2s_lrclk_pin:
-      number: GPIO13 # WS / LRCLK
-      allow_other_uses: true
-    i2s_bclk_pin:
-      number: GPIO18 # SCK / BCLK
-      allow_other_uses: true
-
-  - id: i2s_input
-    i2s_lrclk_pin:
-      number: GPIO13 # WS / LRCLK
-      allow_other_uses: true
-    i2s_bclk_pin:
-      number: GPIO18 # SCK / BCLK
-      allow_other_uses: true
+  - id: i2s_shared
+    i2s_lrclk_pin: GPIO13 # WS / LRCLK
+    i2s_bclk_pin: GPIO18 # SCK / BCLK
 
 speaker:
   # Hardware speaker output
   - platform: i2s_audio
     id: onju_out
     dac_type: external
-    channel: stereo
+    channel: mono
     sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
-    bits_per_sample: 16bit # DAC supports 16/24/32 bit, TODO: set whole chain to 24bit?
+    bits_per_sample: 16bit # DAC supports 16/24/32  bit, TODO: set whole chain to 24bit?
     use_apll: true
     i2s_mode: primary
-    i2s_audio_id: i2s_output
+    i2s_audio_id: i2s_shared
     i2s_dout_pin: GPIO12 # SDO / Din
-    buffer_duration: 200ms # increased from 100ms to prevent audio from cutting of on e.g. network issues
+    buffer_duration: 150ms # increased from 100ms to prevent audio from cutting of on e.g. network issues
     timeout: 150ms # Reduced from 500ms
 
   # Virtual speakers to combine the announcement and media streams together into one output
   - platform: mixer
     id: mixer_speaker_id
     output_speaker: onju_out
-    num_channels: 2
-    task_stack_in_psram: true
+    num_channels: 1
+    #task_stack_in_psram: true
     source_speakers:
       - id: announcement_spk_mixer_input
         timeout: 100ms # Reduced from 200ms
@@ -316,14 +301,14 @@ speaker:
     output_speaker: media_spk_mixer_input
     sample_rate: 48000
     bits_per_sample: 16
-    num_channels: 2
+    num_channels: 1
     # task_stack_in_psram: true
   - platform: resampler
     id: announcement_spk_resampling_input
     output_speaker: announcement_spk_mixer_input
     sample_rate: 48000
     bits_per_sample: 16
-    num_channels: 2
+    num_channels: 1
     # task_stack_in_psram: true
 
 microphone:
@@ -333,7 +318,7 @@ microphone:
     adc_type: external
     use_apll: true
     i2s_mode: primary
-    i2s_audio_id: i2s_input
+    i2s_audio_id: i2s_shared
     channel: right # NOTE stereo destroys signal-noise-ratio (SNR) down to 1-2db. Use right or left to get a better SNR of ~16db (in my tests)
     correct_dc_offset: True # NOTE needed for the onju microphone, that suffers from DC offsets
     sample_rate: 16000 # default, mic supports 16kHz to 64kHz, captures approx. ~45Hz to ~15kHz -> 16kHz to 32kHz is sufficient, mww and va need 16kHz
@@ -350,12 +335,12 @@ media_player:
     announcement_pipeline:
       speaker: announcement_spk_resampling_input
       format: FLAC     # FLAC is the least processor intensive codec
-      num_channels: 2
+      num_channels: 1
       sample_rate: 48000
     media_pipeline:
       speaker: media_spk_resampling_input
       format: FLAC     # FLAC is the least processor intensive codec
-      num_channels: 2
+      num_channels: 1
       sample_rate: 48000
     files:
       - id: wakeup
@@ -383,7 +368,11 @@ media_player:
             old_volume = new_volume;
     on_announcement:
       - logger.log: "On Announce"
-      - microphone.stop_capture:
+      - if:
+          condition:
+            - microphone.is_capturing:
+          then:
+            - micro_wake_word.stop
     on_play:
       - logger.log: "On Play"
       - lambda: id(internal_flicker) = false; # needed to deactivate flicker on audio playback
@@ -393,10 +382,13 @@ media_player:
               script.is_running: show_volume
           then:
             - script.execute: controle_leds
-      - microphone.stop_capture:
-    on_pause: # speaker is auto-restarted if something is paused, causing the mic to fail -> stop on wakeword detection
+      - if:
+          condition:
+            - microphone.is_capturing:
+          then:
+            - micro_wake_word.stop
+    on_pause:
       - logger.log: "On Pause"
-      - microphone.stop_capture:
       - if:
           condition:
             and:
@@ -417,10 +409,14 @@ media_player:
           not:
             speaker.is_playing:
               id: onju_out
-      - microphone.capture:
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - micro_wake_word.start
     on_idle: # also called after announcement finished, is triggered on volume change
       - logger.log: "On IDLE"
-      - microphone.stop_capture:
       - if:
           condition:
             and:
@@ -437,17 +433,15 @@ media_player:
                 then:
                   - lambda: id(led_state) = "idle";
                   - script.execute: controle_leds
-      - wait_until:
-          not:
-            speaker.is_playing:
-              id: onju_out
-      - microphone.capture:
-
-  - platform: proxy_speaker
-    id: proxy_speaker_id
-    target: nabu
-    shutdown_delay: 50ms
-    speaker: onju_out
+      - if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  media_player.is_playing:
+          then:
+            - micro_wake_word.start
 
 voice_assistant: # need to use a 16khz due to mww
   id: va
@@ -455,7 +449,8 @@ voice_assistant: # need to use a 16khz due to mww
     microphone: i2s_mics # onju_microphone
     channels: 0
     gain_factor: 38 # simple tuning executed, might benefit from more tuning
-  media_player: proxy_speaker_id
+  media_player: nabu
+  micro_wake_word: mww
   use_wake_word: false
   # For the following three options: speculative tuning based on input audio, as I can't get the resulting file to analyse
   noise_suppression_level: 2
@@ -480,8 +475,13 @@ voice_assistant: # need to use a 16khz due to mww
   on_end:
     - logger.log: "calling on end"
     - wait_until:
-        not:
-          voice_assistant.is_running
+        condition:
+          - media_player.is_announcing:
+        timeout: 0.5s
+    - wait_until:
+        - and:
+            - not:
+                media_player.is_announcing:
     - mixer_speaker.apply_ducking: # Stop ducking audio
         id: media_spk_mixer_input
         decibel_reduction: 0
@@ -493,6 +493,8 @@ voice_assistant: # need to use a 16khz due to mww
           and:
             - switch.is_on: use_wake_word
             - switch.is_off: master_mute_switch
+            - not:
+                media_player.is_playing:
         then:
           - micro_wake_word.start:
   on_client_connected:
@@ -719,7 +721,6 @@ binary_sensor:
         - lambda: id(led_state) = "idle";
         - script.execute: controle_leds
         - delay: 100ms
-        - microphone.capture
         - if:
             condition:
               and:
