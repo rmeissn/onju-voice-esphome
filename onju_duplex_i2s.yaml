@@ -16,7 +16,7 @@ substitutions:
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
 
 external_components:
-  - source: github://n-IA-hane/intercom-api@e7574e3824da9b16c224d2e54a0f0221e3128c38
+  - source: github://n-IA-hane/intercom-api@dev
     components: [i2s_audio_duplex, esp_aec]
 
 esphome:
@@ -200,7 +200,7 @@ micro_wake_word: # requires 16khz input currently
   id: mww
   microphone:
     microphone: mic_raw # mww_microphone
-    #channels: 0
+    channels: 0
     gain_factor: 3 # simple tuning executed, might benefit from more tuning
   models:
     - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
@@ -283,6 +283,12 @@ i2s_audio_duplex:
   sample_rate: 48000
   output_sample_rate: 16000 # Mic/AEC/MWW/VA decimated to 16kHz via FIR x3
   aec_id: aec_processor
+  aec_reference_delay_ms: 80 # default, tune if echo cancellation isn't right
+  bits_per_sample: 32 # SPH0645 needs 32-bit I2S frames
+  correct_dc_offset: true # removes DC bias from SPH0645 MEMS mics
+  mic_channel: right # which stereo slot carries your mic (was channel: right in old config)
+  # num_channels: 2 # stereo capture — see note below about SNR
+  use_apll: true # better clock accuracy
   
 esp_aec:
   id: aec_processor
@@ -298,7 +304,7 @@ speaker:
     i2s_audio_duplex_id: i2s_shared
     sample_rate: 48000
     #num_channels: 1
-    bits_per_sample: 16 # DAC supports 16/24/32  bit, TODO: set whole chain to 24bit?
+    #bits_per_sample: 16 # DAC supports 16/24/32  bit, TODO: set whole chain to 24bit?
   # - platform: i2s_audio
   #   id: onju_out
   #   dac_type: external
@@ -320,9 +326,11 @@ speaker:
     #task_stack_in_psram: true
     source_speakers:
       - id: announcement_spk_mixer_input
-        timeout: 100ms # Reduced from 200ms
+        timeout: 10s
+        buffer_duration: 500ms
       - id: media_spk_mixer_input
-        timeout: 100ms # Reduced from 200ms
+        timeout: 10s
+        buffer_duration: 500ms
 
   # Virtual speakers to resample each pipelines' audio, if necessary, as the mixer speaker requires the same sample rate
   - platform: resampler
@@ -345,13 +353,13 @@ microphone:
     id: i2s_mics
     i2s_audio_duplex_id: i2s_shared
     #num_channels: 1 # NOTE stereo destroys 
-    bits_per_sample: 32 # default, mic only supports 24 bits, TODO: test 16 (implemented) or 24 bit (not implemented?)
+    #bits_per_sample: 32 # default, mic only supports 24 bits, TODO: test 16 (implemented) or 24 bit (not implemented?)
   - platform: i2s_audio_duplex
     id: mic_raw
     i2s_audio_duplex_id: i2s_shared
     pre_aec: true
     #num_channels: 1 # NOTE stereo destroys 
-    bits_per_sample: 32 # default, mic only supports 24 bits, TODO: test 16 (implemented) or 24 bit (not implemented?)
+    #bits_per_sample: 32 # default, mic only supports 24 bits, TODO: test 16 (implemented) or 24 bit (not implemented?)
 
 # microphone:
 #   - platform: i2s_audio
@@ -457,6 +465,7 @@ media_player:
       #        voice_assistant.is_running:
       #    then:
       #      - micro_wake_word.start
+      - micro_wake_word.start
     on_idle: # also called after announcement finished, is triggered on volume change
       - logger.log: "On IDLE"
       - if:
@@ -475,6 +484,7 @@ media_player:
                 then:
                   - lambda: id(led_state) = "idle";
                   - script.execute: controle_leds
+      - micro_wake_word.start
       #- if:
       #    condition:
       #      and:
@@ -489,7 +499,7 @@ voice_assistant: # need to use a 16khz due to mww
   id: va
   microphone:
     microphone: i2s_mics # onju_microphone
-    #channels: 0
+    channels: 0
     gain_factor: 3 # simple tuning executed, might benefit from more tuning
   media_player: nabu
   micro_wake_word: mww
