@@ -1,4 +1,4 @@
-# NOTE: won't recognize any speech or hotword yet
+# NOTE: Works quite good, might need further tuning of gain and attenuation values
 
 substitutions:
   name: "onju-voice"
@@ -18,6 +18,7 @@ substitutions:
 external_components:
   - source: github://n-IA-hane/intercom-api@dev
     components: [i2s_audio_duplex, esp_aec]
+    refresh: 0s
 
 esphome:
   name: "${name}"
@@ -201,7 +202,7 @@ micro_wake_word: # requires 16khz input currently
   microphone:
     microphone: mic_raw # mww_microphone
     channels: 0
-    gain_factor: 3 # simple tuning executed, might benefit from more tuning
+    gain_factor: 3 # TODO find optimal value, probably 3 or 4, try 38 again to verify that it is indeed too much
   models:
     - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
       id: okay_nabu
@@ -217,10 +218,6 @@ micro_wake_word: # requires 16khz input currently
           - wait_until:
               speaker.is_playing:
                 id: onju_out
-          #- wait_until:
-          #    not:
-          #      speaker.is_playing:
-          #        id: onju_out
           - voice_assistant.start:
               wake_word: !lambda return wake_word;
 
@@ -268,11 +265,6 @@ select:
           id(okay_nabu).set_probability_cutoff(143);    // 0.56 -> 0.751 FAPH on DipCo
         }
 
-#i2s_audio:
-#  - id: i2s_shared
-#    i2s_lrclk_pin: GPIO13 # WS / LRCLK
-#    i2s_bclk_pin: GPIO18 # SCK / BCLK
-
 i2s_audio_duplex:
   id: i2s_shared
   i2s_lrclk_pin: GPIO13
@@ -280,19 +272,20 @@ i2s_audio_duplex:
   #i2s_mclk_pin: GPIO12
   i2s_din_pin: GPIO17
   i2s_dout_pin: GPIO12
-  sample_rate: 48000
+  sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
   output_sample_rate: 16000 # Mic/AEC/MWW/VA decimated to 16kHz via FIR x3
   aec_id: aec_processor
   aec_reference_delay_ms: 80 # default, tune if echo cancellation isn't right
-  bits_per_sample: 32 # SPH0645 needs 32-bit I2S frames
+  bits_per_sample: 32 # SPH0645 needs 32-bit I2S frames, # DAC supports 16/24/32  bit, TODO: set whole chain to 24bit?
   correct_dc_offset: true # removes DC bias from SPH0645 MEMS mics
-  mic_channel: right # which stereo slot carries your mic (was channel: right in old config)
+  mic_channel: right # which stereo slot carries the mic
   # num_channels: 2 # stereo capture — see note below about SNR
+  # NOTE stereo destroys signal-noise-ratio (SNR) down to 1-2db. Use right or left to get a better SNR of ~16db (in my tests), TODO: retest with this new dupex implementation
   use_apll: true # better clock accuracy
   
 esp_aec:
   id: aec_processor
-  sample_rate: 16000 # AEC always at 16kHz (= output_sample_rate)
+  sample_rate: 16000 # AEC is always at 16kHz (= output_sample_rate)
   mode: voip_low_cost
   filter_length: 4 # 64ms tail — sufficient for integrated codec path
   # AVOID sr_high_perf: exhausts DMA memory on ESP32-S3 → SPI err 101
@@ -302,21 +295,7 @@ speaker:
   - platform: i2s_audio_duplex
     id: onju_out
     i2s_audio_duplex_id: i2s_shared
-    sample_rate: 48000
-    #num_channels: 1
-    #bits_per_sample: 16 # DAC supports 16/24/32  bit, TODO: set whole chain to 24bit?
-  # - platform: i2s_audio
-  #   id: onju_out
-  #   dac_type: external
-  #   channel: mono
-  #   sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
-  #   bits_per_sample: 16bit # DAC supports 16/24/32  bit, TODO: set whole chain to 24bit?
-  #   use_apll: true
-  #   i2s_mode: primary
-  #   i2s_audio_id: i2s_shared
-  #   i2s_dout_pin: GPIO12 # SDO / Din
-  #   buffer_duration: 150ms # increased from 100ms to prevent audio from cutting of on e.g. network issues
-  #   timeout: 150ms # Reduced from 500ms
+    sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
 
   # Virtual speakers to combine the announcement and media streams together into one output
   - platform: mixer
@@ -352,34 +331,17 @@ microphone:
   - platform: i2s_audio_duplex
     id: i2s_mics
     i2s_audio_duplex_id: i2s_shared
-    #num_channels: 1 # NOTE stereo destroys 
-    #bits_per_sample: 32 # default, mic only supports 24 bits, TODO: test 16 (implemented) or 24 bit (not implemented?)
   - platform: i2s_audio_duplex
     id: mic_raw
     i2s_audio_duplex_id: i2s_shared
     pre_aec: true
-    #num_channels: 1 # NOTE stereo destroys 
-    #bits_per_sample: 32 # default, mic only supports 24 bits, TODO: test 16 (implemented) or 24 bit (not implemented?)
-
-# microphone:
-#   - platform: i2s_audio
-#     id: i2s_mics
-#     i2s_din_pin: GPIO17 # SDI
-#     adc_type: external
-#     use_apll: true
-#     i2s_mode: primary
-#     i2s_audio_id: i2s_shared
-#     channel: right # NOTE stereo destroys signal-noise-ratio (SNR) down to 1-2db. Use right or left to get a better SNR of ~16db (in my tests)
-#     correct_dc_offset: True # NOTE needed for the onju microphone, that suffers from DC offsets
-#     sample_rate: 16000 # default, mic supports 16kHz to 64kHz, captures approx. ~45Hz to ~15kHz -> 16kHz to 32kHz is sufficient, mww and va need 16kHz
-#     bits_per_sample: 32bit # default, mic only supports 24 bits, TODO: test 16 (implemented) or 24 bit (not implemented?)
 
 media_player:
   - platform: speaker
     name: "Media Player"
     id: nabu
     volume_increment: 0.05
-    volume_min: 0.2
+    volume_min: 0
     volume_max: 1
     # task_stack_in_psram: true
     announcement_pipeline:
@@ -418,11 +380,6 @@ media_player:
             old_volume = new_volume;
     on_announcement:
       - logger.log: "On Announce"
-      #- if:
-      #    condition:
-      #      - microphone.is_capturing:
-      #    then:
-      #      - micro_wake_word.stop
     on_play:
       - logger.log: "On Play"
       - lambda: id(internal_flicker) = false; # needed to deactivate flicker on audio playback
@@ -432,11 +389,6 @@ media_player:
               script.is_running: show_volume
           then:
             - script.execute: controle_leds
-      #- if:
-      #    condition:
-      #      - microphone.is_capturing:
-      #    then:
-      #      - micro_wake_word.stop
     on_pause:
       - logger.log: "On Pause"
       - if:
@@ -450,21 +402,14 @@ media_player:
             - lambda: id(internal_flicker) = true; # activated flicker on pause
             - if:
                 condition:
-                  not:
-                    script.is_running: show_volume
+                  and:
+                    - not:
+                        script.is_running: show_volume
+                    - not:
+                        voice_assistant.is_running
                 then:
                   - lambda: id(led_state) = "idle";
                   - script.execute: controle_leds
-      #- wait_until:
-      #    not:
-      #      speaker.is_playing:
-      #        id: onju_out
-      #- if:
-      #    condition:
-      #      not:
-      #        voice_assistant.is_running:
-      #    then:
-      #      - micro_wake_word.start
       - micro_wake_word.start
     on_idle: # also called after announcement finished, is triggered on volume change
       - logger.log: "On IDLE"
@@ -479,28 +424,22 @@ media_player:
             - lambda: id(internal_flicker) = true; # needed to activate flicker on idle
             - if:
                 condition:
-                  not:
-                    script.is_running: show_volume
+                  and:
+                    - not:
+                        script.is_running: show_volume
+                    - not:
+                        voice_assistant.is_running
                 then:
                   - lambda: id(led_state) = "idle";
                   - script.execute: controle_leds
       - micro_wake_word.start
-      #- if:
-      #    condition:
-      #      and:
-      #        - not:
-      #            voice_assistant.is_running:
-      #        - not:
-      #            media_player.is_playing:
-      #    then:
-      #      - micro_wake_word.start
 
 voice_assistant: # need to use a 16khz due to mww
   id: va
   microphone:
     microphone: i2s_mics # onju_microphone
     channels: 0
-    gain_factor: 3 # simple tuning executed, might benefit from more tuning
+    gain_factor: 3 # TODO find optimal value, probably 3 or 4, try 38 again to verify that it is indeed too much
   media_player: nabu
   micro_wake_word: mww
   use_wake_word: false
