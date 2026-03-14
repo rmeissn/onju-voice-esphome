@@ -16,7 +16,7 @@ substitutions:
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
 
 external_components:
-  - source: github://n-IA-hane/intercom-api@dev
+  - source: github://n-IA-hane/intercom-api@main
     components: [i2s_audio_duplex, esp_aec]
     refresh: 0s
 
