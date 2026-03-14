@@ -202,7 +202,7 @@ micro_wake_word: # requires 16khz input currently
   microphone:
     microphone: mic_raw # mww_microphone
     channels: 0
-    gain_factor: 3 # TODO find optimal value, probably 3 or 4, try 38 again to verify that it is indeed too much
+    gain_factor: 32 # TODO find optimal value, probably 8 to 16 if speaker is recorded, 32 to 64 if no speaker is active (or very quiete)
   models:
     - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
       id: okay_nabu
@@ -439,7 +439,7 @@ voice_assistant: # need to use a 16khz due to mww
   microphone:
     microphone: i2s_mics # onju_microphone
     channels: 0
-    gain_factor: 3 # TODO find optimal value, probably 3 or 4, try 38 again to verify that it is indeed too much
+    gain_factor: 32 # TODO find optimal value, probably 8 to 16 if speaker is recorded, 32 to 64 if no speaker is active (or very quiete)
   media_player: nabu
   micro_wake_word: mww
   use_wake_word: false
@@ -450,7 +450,7 @@ voice_assistant: # need to use a 16khz due to mww
   on_start:
     - mixer_speaker.apply_ducking: # useful if music is started in the background
         id: media_spk_mixer_input
-        decibel_reduction: 20  # Number of dB quieter; higher implies more quiet, 0 implies full volume
+        decibel_reduction: 30  # Number of dB quieter; higher implies more quiet, 0 implies full volume
         duration: 0.0s         # The duration of the transition (default is no transition) -> duck now
   on_listening:
     - lambda: id(led_state) = "listening";
@@ -1340,7 +1340,7 @@ switch:
       # Duck audio
       - mixer_speaker.apply_ducking:
           id: media_spk_mixer_input
-          decibel_reduction: 20
+          decibel_reduction: 30
           duration: 0.0s
       # Ring timer
       - script.execute: ring_timer
