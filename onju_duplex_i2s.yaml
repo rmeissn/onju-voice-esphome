@@ -16,15 +16,15 @@ substitutions:
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
 
 external_components:
-  - source: github://n-IA-hane/intercom-api@main
-    components: [i2s_audio_duplex, esp_aec]
+  - source: github://n-IA-hane/esphome-intercom@main
+    components: [i2s_audio_duplex, esp_aec, intercom_api]
     refresh: 0s
 
 esphome:
   name: "${name}"
   friendly_name: "${friendly_name}"
   comment: "${device_description}"
-  min_version: 2026.2.0
+  min_version: 2026.3.0
   name_add_mac_suffix: true
   project:
     name: rmeissn.onju-voice-esphome
@@ -156,18 +156,18 @@ globals:
     initial_value: '0'
 
 interval:
-  - interval: 1s
-    then:
-      # - logger.log: "Running touch calibration interval"
-      - script.execute:
-          id: calibrate_touch
-          button: 0
-      - script.execute:
-          id: calibrate_touch
-          button: 1
-      - script.execute:
-          id: calibrate_touch
-          button: 2
+  # - interval: 1s # NOTE probably not needed anymore with new esp32_touch implementation from 2026.3
+  #   then:
+  #     # - logger.log: "Running touch calibration interval"
+  #     - script.execute:
+  #         id: calibrate_touch
+  #         button: 0
+  #     - script.execute:
+  #         id: calibrate_touch
+  #         button: 1
+  #     - script.execute:
+  #         id: calibrate_touch
+  #         button: 2
 
   - interval: 2s
     then:
@@ -200,7 +200,7 @@ interval:
 micro_wake_word: # requires 16khz input currently
   id: mww
   microphone:
-    microphone: mic_raw # mww_microphone
+    microphone: i2s_mics # mww_microphone
     channels: 0
     gain_factor: 32 # TODO find optimal value, probably 8 to 16 if speaker is recorded, 32 to 64 if no speaker is active (or very quiete)
   models:
@@ -236,6 +236,18 @@ number:
       then:
         - lambda: |-
             id(thresh_percent) = 0.01 * x;
+  #- platform: intercom_api
+  #  intercom_api_id: intercom
+  #  speaker_volume:
+  #    id: speaker_volume
+  #    name: "Speaker Volume"
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_shared
+    mic_gain:
+      name: Mic Gain
+    mic_gain_pre_aec:
+      name: Mic Gain Pre-AEC
+      pre_aec: true
 
 select:
   - platform: template
@@ -265,30 +277,35 @@ select:
           id(okay_nabu).set_probability_cutoff(143);    // 0.56 -> 0.751 FAPH on DipCo
         }
 
+intercom_api:
+  id: intercom
+  mode: simple
+  microphone: i2s_mics
+  speaker: media_spk_resampling_input
+  dc_offset_removal: false
+  ringing_timeout: 30s
+
 i2s_audio_duplex:
   id: i2s_shared
   i2s_lrclk_pin: GPIO13
   i2s_bclk_pin: GPIO18
-  #i2s_mclk_pin: GPIO12
   i2s_din_pin: GPIO17
   i2s_dout_pin: GPIO12
   sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
   output_sample_rate: 16000 # Mic/AEC/MWW/VA decimated to 16kHz via FIR x3
   aec_id: aec_processor
-  aec_reference_delay_ms: 80 # default, tune if echo cancellation isn't right
-  bits_per_sample: 32 # SPH0645 needs 32-bit I2S frames, # DAC supports 16/24/32  bit, TODO: set whole chain to 24bit?
+  slot_bit_width: 32 # SPH0645 needs 32-bit I2S frames
   correct_dc_offset: true # removes DC bias from SPH0645 MEMS mics
   mic_channel: right # which stereo slot carries the mic
   # num_channels: 2 # stereo capture — see note below about SNR
   # NOTE stereo destroys signal-noise-ratio (SNR) down to 1-2db. Use right or left to get a better SNR of ~16db (in my tests), TODO: retest with this new dupex implementation
-  use_apll: true # better clock accuracy
+  buffers_in_psram: true # Required for sr_low_cost (512-sample frames)
   
 esp_aec:
   id: aec_processor
   sample_rate: 16000 # AEC is always at 16kHz (= output_sample_rate)
-  mode: voip_low_cost
+  mode: sr_high_perf
   filter_length: 4 # 64ms tail — sufficient for integrated codec path
-  # AVOID sr_high_perf: exhausts DMA memory on ESP32-S3 → SPI err 101
 
 speaker:
   # Hardware speaker output
@@ -302,12 +319,15 @@ speaker:
     id: mixer_speaker_id
     output_speaker: onju_out
     num_channels: 1
-    #task_stack_in_psram: true
+    # task_stack_in_psram: true
     source_speakers:
       - id: announcement_spk_mixer_input
         timeout: 10s
         buffer_duration: 500ms
       - id: media_spk_mixer_input
+        timeout: 10s
+        buffer_duration: 500ms
+      - id: intercom_spk_mixer_input
         timeout: 10s
         buffer_duration: 500ms
 
@@ -326,15 +346,18 @@ speaker:
     bits_per_sample: 16
     num_channels: 1
     # task_stack_in_psram: true
+  - platform: resampler
+    id: intercom_spk_resampling_input
+    output_speaker: intercom_spk_mixer_input
+    sample_rate: 48000
+    bits_per_sample: 16
+    num_channels: 1
+    # task_stack_in_psram: true
 
 microphone:
   - platform: i2s_audio_duplex
     id: i2s_mics
     i2s_audio_duplex_id: i2s_shared
-  - platform: i2s_audio_duplex
-    id: mic_raw
-    i2s_audio_duplex_id: i2s_shared
-    pre_aec: true
 
 media_player:
   - platform: speaker
@@ -1149,100 +1172,114 @@ script:
           }
           id(is_timer_active) = output;
 
-  - id: calibrate_touch
-    parameters:
-      button: int
-    then:
-      - lambda: |-
-          static uint8_t thresh_indices[3] = {0, 0, 0};
-          static uint32_t sums[3] = {0, 0, 0};
-          static uint8_t qsizes[3] = {0, 0, 0};
-          static uint16_t consecutive_anomalies_per_button[3] = {0, 0, 0};
+  # - id: calibrate_touch # NOTE probably not needed anymore with new esp32_touch implementation from 2026.3
+  #   parameters:
+  #     button: int
+  #   then:
+  #     - lambda: |-
+  #         struct TouchAccessor : public esphome::esp32_touch::ESP32TouchBinarySensor {
+  #           touch_channel_handle_t get_chan_handle() { return this->chan_handle_; }
+  #         };
 
-          uint32_t newval = 0;
-          uint32_t* calibration_values;
-          touch_pad_t pad;
+  #         static uint8_t thresh_indices[3] = {0, 0, 0};
+  #         static uint32_t sums[3] = {0, 0, 0};
+  #         static uint8_t qsizes[3] = {0, 0, 0};
+  #         static uint16_t consecutive_anomalies_per_button[3] = {0, 0, 0};
 
-          switch(button) {
-            case 0:
-              pad = id(volume_down).get_touch_pad();
-              calibration_values = id(touch_calibration_values_left);
-              break;
-            case 1:
-              pad = id(action).get_touch_pad();
-              calibration_values = id(touch_calibration_values_center);
-              break;
-            case 2:
-              pad = id(volume_up).get_touch_pad();
-              calibration_values = id(touch_calibration_values_right);
-              break;
-            default:
-              ESP_LOGE("touch_calibration", "Invalid button ID (%d)", button);
-              return;
-          }
+  #         uint32_t newval = 0;
+  #         uint32_t* calibration_values;
+  #         touch_channel_handle_t chan_handle = nullptr;
+
+  #         switch(button) {
+  #           case 0:
+  #             chan_handle = static_cast<TouchAccessor*>(id(volume_down))->get_chan_handle();
+  #             calibration_values = id(touch_calibration_values_left);
+  #             break;
+  #           case 1:
+  #             chan_handle = static_cast<TouchAccessor*>(id(action))->get_chan_handle();
+  #             calibration_values = id(touch_calibration_values_center);
+  #             break;
+  #           case 2:
+  #             chan_handle = static_cast<TouchAccessor*>(id(volume_up))->get_chan_handle();
+  #             calibration_values = id(touch_calibration_values_right);
+  #             break;
+  #           default:
+  #             ESP_LOGE("touch_calibration", "Invalid button ID (%d)", button);
+  #             return;
+  #         }
           
-          // Read directly from hardware because id().get_value() is only updated on interrupts/setup_mode
-          touch_pad_filter_read_smooth(pad, &newval);
+  #         // Read directly from hardware because id().get_value() is only updated on interrupts/setup_mode
+  #         touch_channel_read_data(chan_handle, TOUCH_CHAN_DATA_TYPE_SMOOTH, &newval);
 
-          //ESP_LOGD("touch_calibration", "[%d] qsize %d, sum %d, thresh_index %d, consecutive_anomalies %d", button, qsizes[button], sums[button], thresh_indices[button], consecutive_anomalies_per_button[button]);
-          //ESP_LOGD("touch_calibration", "[%d] Raw value: %d", button, newval);
+  #         //ESP_LOGD("touch_calibration", "[%d] qsize %d, sum %d, thresh_index %d, consecutive_anomalies %d", button, qsizes[button], sums[button], thresh_indices[button], consecutive_anomalies_per_button[button]);
+  #         //ESP_LOGD("touch_calibration", "[%d] Raw value: %d", button, newval);
 
-          if(newval == 0) {
-            ESP_LOGW("touch_calibration", "[%d] Read 0 as value, skipping calibration", button);
-            return;
-          }
+  #         if(newval == 0) {
+  #           ESP_LOGW("touch_calibration", "[%d] Read 0 as value, skipping calibration", button);
+  #           return;
+  #         }
 
-          if(qsizes[button] == 5) {
-            float avg = float(sums[button])/float(qsizes[button]);
-            if((fabs(float(newval)-avg)/avg) > id(thresh_percent)) {
-              consecutive_anomalies_per_button[button]++;
-              //ESP_LOGD("touch_calibration", "[%d] %d anomalies detected.", button, consecutive_anomalies_per_button[button]);
-              if(consecutive_anomalies_per_button[button] < 10)
-                return;
-            } 
-          }
+  #         if(qsizes[button] == 5) {
+  #           float avg = float(sums[button])/float(qsizes[button]);
+  #           if((fabs(float(newval)-avg)/avg) > id(thresh_percent)) {
+  #             consecutive_anomalies_per_button[button]++;
+  #             //ESP_LOGD("touch_calibration", "[%d] %d anomalies detected.", button, consecutive_anomalies_per_button[button]);
+  #             if(consecutive_anomalies_per_button[button] < 10)
+  #               return;
+  #           } 
+  #         }
 
-          //ESP_LOGD("touch_calibration", "[%d] Resetting consecutive anomalies counter.", button);
-          consecutive_anomalies_per_button[button] = 0;
+  #         //ESP_LOGD("touch_calibration", "[%d] Resetting consecutive anomalies counter.", button);
+  #         consecutive_anomalies_per_button[button] = 0;
 
 
-          if(qsizes[button] == 5) {
-            //ESP_LOGD("touch_calibration", "[%d] Queue full, removing %d.", button, id(touch_calibration_values)[thresh_indices[button]]);
-            sums[button] -= (uint32_t)*(calibration_values+thresh_indices[button]);// id(touch_calibration_values)[thresh_indices[button]];
-            qsizes[button]--;
-          }
-          *(calibration_values+thresh_indices[button]) = newval;
-          sums[button] += newval;
-          qsizes[button]++;
-          thresh_indices[button] = (thresh_indices[button] + 1) % 5;
+  #         if(qsizes[button] == 5) {
+  #           //ESP_LOGD("touch_calibration", "[%d] Queue full, removing %d.", button, id(touch_calibration_values)[thresh_indices[button]]);
+  #           sums[button] -= (uint32_t)*(calibration_values+thresh_indices[button]);// id(touch_calibration_values)[thresh_indices[button]];
+  #           qsizes[button]--;
+  #         }
+  #         *(calibration_values+thresh_indices[button]) = newval;
+  #         sums[button] += newval;
+  #         qsizes[button]++;
+  #         thresh_indices[button] = (thresh_indices[button] + 1) % 5;
 
-          //ESP_LOGD("touch_calibration", "[%d] Average value is %d", button, sums[button]/qsizes[button]);
-          uint32_t avg = sums[button]/qsizes[button];
-          uint32_t delta = uint32_t(avg * id(thresh_percent));
-          // Ensure a minimum delta to prevent noise triggers if percent is too low
-          if (delta < 100) delta = 100;
+  #         //ESP_LOGD("touch_calibration", "[%d] Average value is %d", button, sums[button]/qsizes[button]);
+  #         uint32_t avg = sums[button]/qsizes[button];
+  #         uint32_t delta = uint32_t(avg * id(thresh_percent));
+  #         // Ensure a minimum delta to prevent noise triggers if percent is too low
+  #         if (delta < 100) delta = 100;
           
-          //ESP_LOGD("touch_calibration", "[%d] Average: %d, Setting delta threshold: %d", button, avg, delta);
+  #         //ESP_LOGD("touch_calibration", "[%d] Average: %d, Setting delta threshold: %d", button, avg, delta);
 
-          switch(button) {
-            case 0:
-              id(volume_down).set_threshold(delta);
-              touch_pad_set_thresh(id(volume_down).get_touch_pad(), delta);
-              break;
-            case 1:
-              id(action).set_threshold(delta);
-              touch_pad_set_thresh(id(action).get_touch_pad(), delta);
-              break;
-            case 2:
-              id(volume_up).set_threshold(delta);
-              touch_pad_set_thresh(id(volume_up).get_touch_pad(), delta);
-              break;
-            default:
-              ESP_LOGE("touch_calibration", "Invalid button ID (%d)", button);
-              return;
-          }
+  #         touch_channel_config_t chan_cfg = {};
+  #         chan_cfg.active_thresh[0] = delta;
+  #         chan_cfg.charge_speed = TOUCH_CHARGE_SPEED_7;
+  #         chan_cfg.init_charge_volt = TOUCH_INIT_CHARGE_VOLT_DEFAULT;
+
+  #         switch(button) {
+  #           case 0:
+  #             id(volume_down).set_threshold(delta);
+  #             break;
+  #           case 1:
+  #             id(action).set_threshold(delta);
+  #             break;
+  #           case 2:
+  #             id(volume_up).set_threshold(delta);
+  #             break;
+  #           default:
+  #             ESP_LOGE("touch_calibration", "Invalid button ID (%d)", button);
+  #             return;
+  #         }
+          
+  #         touch_sensor_reconfig_channel(chan_handle, &chan_cfg);
 
 switch:
+  #- platform: i2s_audio_duplex
+  #  aec:
+  #    id: aec_switch
+  #    name: "Echo Cancellation"
+  #    icon: mdi:ear-hearing
+  #    restore_mode: RESTORE_DEFAULT_ON
   # This is the master mute switch. It is exposed to Home Assistant. The user can only turn it on and off if the hardware switch is off. (The hardware switch overrides the software one)
   - platform: template
     id: master_mute_switch
@@ -1263,14 +1300,14 @@ switch:
             binary_sensor.is_off: hardware_mute_switch
           then:
             - microphone.mute:
-                id: mic_raw
+                id: i2s_mics
     turn_off_action:
       - if:
           condition:
             binary_sensor.is_off: hardware_mute_switch
           then:
             - microphone.unmute:
-                id: mic_raw
+                id: i2s_mics
     on_turn_on:
       - lambda: id(led_state) = "idle"; # idle handles checking the mute switch
       - script.execute: controle_leds
