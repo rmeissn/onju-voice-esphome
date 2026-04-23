@@ -24,8 +24,10 @@ esphome:
   name: "${name}"
   friendly_name: "${friendly_name}"
   comment: "${device_description}"
-  min_version: 2026.3.0
+  min_version: 2026.4.0
   name_add_mac_suffix: true
+  includes:
+    - touch_hack.h
   project:
     name: rmeissn.onju-voice-esphome
     version: "${project_version}"
@@ -156,18 +158,109 @@ globals:
     initial_value: '0'
 
 interval:
-  # - interval: 1s # NOTE probably not needed anymore with new esp32_touch implementation from 2026.3
-  #   then:
-  #     # - logger.log: "Running touch calibration interval"
-  #     - script.execute:
-  #         id: calibrate_touch
-  #         button: 0
-  #     - script.execute:
-  #         id: calibrate_touch
-  #         button: 1
-  #     - script.execute:
-  #         id: calibrate_touch
-  #         button: 2
+  - interval: 1s # NOTE still needed with 2026.3 and up
+    then:
+      # - logger.log: "Running touch self-calibration"
+      - lambda: |-
+          // Run calibration for all 3 buttons in one go, so the sensor is only stopped/restarted once
+          struct TouchAccessor : public esphome::esp32_touch::ESP32TouchBinarySensor {
+            touch_channel_handle_t get_chan_handle() { return this->chan_handle_; }
+          };
+
+          static uint8_t thresh_indices[3] = {0, 0, 0};
+          static uint32_t sums[3] = {0, 0, 0};
+          static uint8_t qsizes[3] = {0, 0, 0};
+          static uint16_t consecutive_anomalies_per_button[3] = {0, 0, 0};
+
+          esphome::esp32_touch::ESP32TouchBinarySensor* sensors[3] = {
+            id(volume_down), id(action), id(volume_up)
+          };
+          uint32_t* calibration_arrays[3] = {
+            id(touch_calibration_values_left),
+            id(touch_calibration_values_center),
+            id(touch_calibration_values_right)
+          };
+
+          // Calculate new thresholds for all 3 buttons
+          bool any_update = false;
+          touch_channel_handle_t chan_handles[3];
+
+          // Extract sens_handle directly from chan_handles to avoid Component iteration and `final` inheritance restrictions
+          struct touch_channel_dummy_s {
+            touch_sensor_handle_t base;
+            int id;
+          };
+
+          for (int btn = 0; btn < 3; btn++) {
+            chan_handles[btn] = static_cast<TouchAccessor*>(sensors[btn])->get_chan_handle();
+          }
+          if (!chan_handles[0]) {
+            ESP_LOGE("touch_calibration", "Touch channels not initialized");
+            return;
+          }
+          touch_sensor_handle_t sens_handle = reinterpret_cast<touch_channel_dummy_s*>(chan_handles[0])->base;
+
+          bool needs_update[3] = {false, false, false};
+
+          for (int btn = 0; btn < 3; btn++) {
+            uint32_t* calibration_values = calibration_arrays[btn];
+
+            uint32_t newval = 0;
+            touch_channel_read_data(chan_handles[btn], TOUCH_CHAN_DATA_TYPE_SMOOTH, &newval);
+
+            if (newval == 0) {
+              ESP_LOGW("touch_calibration", "[%d] Read 0 as value, skipping calibration", btn);
+              continue;
+            }
+
+            if (qsizes[btn] == 5) {
+              float avg = float(sums[btn]) / float(qsizes[btn]);
+              if ((fabs(float(newval) - avg) / avg) > id(thresh_percent)) {
+                consecutive_anomalies_per_button[btn]++;
+                if (consecutive_anomalies_per_button[btn] < 10)
+                  continue;
+              }
+            }
+
+            consecutive_anomalies_per_button[btn] = 0;
+
+            if (qsizes[btn] == 5) {
+              sums[btn] -= (uint32_t)*(calibration_values + thresh_indices[btn]);
+              qsizes[btn]--;
+            }
+            *(calibration_values + thresh_indices[btn]) = newval;
+            sums[btn] += newval;
+            qsizes[btn]++;
+            thresh_indices[btn] = (thresh_indices[btn] + 1) % 5;
+
+            uint32_t avg = sums[btn] / qsizes[btn];
+            uint32_t delta = uint32_t(avg * id(thresh_percent));
+            if (delta < 100) delta = 100;
+
+            uint32_t old_delta = sensors[btn]->get_threshold();
+            if (abs((int)delta - (int)old_delta) > 5) {
+              sensors[btn]->set_threshold(delta);
+
+              needs_update[btn] = true;
+              any_update = true;
+            }
+          }
+
+          // Set the threshold directly via the low-level hardware register.
+          // This avoids the need to call touch_sensor_reconfig_channel() 
+          // and prevents ESP-IDF from complaining about the sensor not being disabled.
+          if (any_update) {
+            for (int btn = 0; btn < 3; btn++) {
+              if (needs_update[btn]) {
+                auto chan = reinterpret_cast<touch_channel_dummy_s*>(chan_handles[btn]);
+                if (chan && chan->id > 0) {
+                  uint32_t delta = sensors[btn]->get_threshold();
+                  set_touch_threshold(chan->id, delta);
+                  ESP_LOGD("touch_calibration", "[%d] Set new threshold to %u (Channel %d)", btn, delta, chan->id);
+                }
+              }
+            }
+          }
 
   - interval: 2s
     then:
@@ -1171,107 +1264,6 @@ script:
             }
           }
           id(is_timer_active) = output;
-
-  # - id: calibrate_touch # NOTE probably not needed anymore with new esp32_touch implementation from 2026.3
-  #   parameters:
-  #     button: int
-  #   then:
-  #     - lambda: |-
-  #         struct TouchAccessor : public esphome::esp32_touch::ESP32TouchBinarySensor {
-  #           touch_channel_handle_t get_chan_handle() { return this->chan_handle_; }
-  #         };
-
-  #         static uint8_t thresh_indices[3] = {0, 0, 0};
-  #         static uint32_t sums[3] = {0, 0, 0};
-  #         static uint8_t qsizes[3] = {0, 0, 0};
-  #         static uint16_t consecutive_anomalies_per_button[3] = {0, 0, 0};
-
-  #         uint32_t newval = 0;
-  #         uint32_t* calibration_values;
-  #         touch_channel_handle_t chan_handle = nullptr;
-
-  #         switch(button) {
-  #           case 0:
-  #             chan_handle = static_cast<TouchAccessor*>(id(volume_down))->get_chan_handle();
-  #             calibration_values = id(touch_calibration_values_left);
-  #             break;
-  #           case 1:
-  #             chan_handle = static_cast<TouchAccessor*>(id(action))->get_chan_handle();
-  #             calibration_values = id(touch_calibration_values_center);
-  #             break;
-  #           case 2:
-  #             chan_handle = static_cast<TouchAccessor*>(id(volume_up))->get_chan_handle();
-  #             calibration_values = id(touch_calibration_values_right);
-  #             break;
-  #           default:
-  #             ESP_LOGE("touch_calibration", "Invalid button ID (%d)", button);
-  #             return;
-  #         }
-          
-  #         // Read directly from hardware because id().get_value() is only updated on interrupts/setup_mode
-  #         touch_channel_read_data(chan_handle, TOUCH_CHAN_DATA_TYPE_SMOOTH, &newval);
-
-  #         //ESP_LOGD("touch_calibration", "[%d] qsize %d, sum %d, thresh_index %d, consecutive_anomalies %d", button, qsizes[button], sums[button], thresh_indices[button], consecutive_anomalies_per_button[button]);
-  #         //ESP_LOGD("touch_calibration", "[%d] Raw value: %d", button, newval);
-
-  #         if(newval == 0) {
-  #           ESP_LOGW("touch_calibration", "[%d] Read 0 as value, skipping calibration", button);
-  #           return;
-  #         }
-
-  #         if(qsizes[button] == 5) {
-  #           float avg = float(sums[button])/float(qsizes[button]);
-  #           if((fabs(float(newval)-avg)/avg) > id(thresh_percent)) {
-  #             consecutive_anomalies_per_button[button]++;
-  #             //ESP_LOGD("touch_calibration", "[%d] %d anomalies detected.", button, consecutive_anomalies_per_button[button]);
-  #             if(consecutive_anomalies_per_button[button] < 10)
-  #               return;
-  #           } 
-  #         }
-
-  #         //ESP_LOGD("touch_calibration", "[%d] Resetting consecutive anomalies counter.", button);
-  #         consecutive_anomalies_per_button[button] = 0;
-
-
-  #         if(qsizes[button] == 5) {
-  #           //ESP_LOGD("touch_calibration", "[%d] Queue full, removing %d.", button, id(touch_calibration_values)[thresh_indices[button]]);
-  #           sums[button] -= (uint32_t)*(calibration_values+thresh_indices[button]);// id(touch_calibration_values)[thresh_indices[button]];
-  #           qsizes[button]--;
-  #         }
-  #         *(calibration_values+thresh_indices[button]) = newval;
-  #         sums[button] += newval;
-  #         qsizes[button]++;
-  #         thresh_indices[button] = (thresh_indices[button] + 1) % 5;
-
-  #         //ESP_LOGD("touch_calibration", "[%d] Average value is %d", button, sums[button]/qsizes[button]);
-  #         uint32_t avg = sums[button]/qsizes[button];
-  #         uint32_t delta = uint32_t(avg * id(thresh_percent));
-  #         // Ensure a minimum delta to prevent noise triggers if percent is too low
-  #         if (delta < 100) delta = 100;
-          
-  #         //ESP_LOGD("touch_calibration", "[%d] Average: %d, Setting delta threshold: %d", button, avg, delta);
-
-  #         touch_channel_config_t chan_cfg = {};
-  #         chan_cfg.active_thresh[0] = delta;
-  #         chan_cfg.charge_speed = TOUCH_CHARGE_SPEED_7;
-  #         chan_cfg.init_charge_volt = TOUCH_INIT_CHARGE_VOLT_DEFAULT;
-
-  #         switch(button) {
-  #           case 0:
-  #             id(volume_down).set_threshold(delta);
-  #             break;
-  #           case 1:
-  #             id(action).set_threshold(delta);
-  #             break;
-  #           case 2:
-  #             id(volume_up).set_threshold(delta);
-  #             break;
-  #           default:
-  #             ESP_LOGE("touch_calibration", "Invalid button ID (%d)", button);
-  #             return;
-  #         }
-          
-  #         touch_sensor_reconfig_channel(chan_handle, &chan_cfg);
 
 switch:
   #- platform: i2s_audio_duplex
