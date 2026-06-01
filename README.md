@@ -4,9 +4,9 @@ ESPHome configuration for the original Onju Voice pcb
 
 Code is inspired by https://github.com/tetele/onju-voice-satellite and https://github.com/s00500/onjuconfig and https://github.com/esphome/home-assistant-voice-pe
 
-## Experiment:
+## Experiment (my goto solution):
 
-Use `onju_duplex_i2s` (instead of `onju_single_i2s`) as an experiment (mic and speaker active at the same time), which allows to issue commands while e.g. music is playing or a timer is ringing. From my preliminary tests, this works quite good, while the used software echo cancellation isn't as good as a dedicated chip (like in the voice pe) and triggering the wake word while music is playing might require a few tries.
+Use `onju_duplex_i2s` (instead of `onju_single_i2s`) as an experiment (mic and speaker active at the same time), which allows to issue commands while e.g. music is playing or a timer is ringing. From my preliminary tests, this works quite good, while the used software echo cancellation isn't as good as a dedicated chip (like in the voice pe) and triggering the wake word while music is playing might not work each and every time.
 
 ## Capabilities
 

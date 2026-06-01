@@ -17,17 +17,15 @@ substitutions:
 
 external_components:
   - source: github://n-IA-hane/esphome-intercom@main
-    components: [i2s_audio_duplex, esp_aec, intercom_api]
+    components: [esp_audio_stack, esp_aec, audio_processor, intercom_api]
     refresh: 0s
 
 esphome:
   name: "${name}"
   friendly_name: "${friendly_name}"
   comment: "${device_description}"
-  min_version: 2026.4.0
+  min_version: 2026.5.0
   name_add_mac_suffix: true
-  includes:
-    - touch_hack.h
   project:
     name: rmeissn.onju-voice-esphome
     version: "${project_version}"
@@ -89,7 +87,12 @@ esp32:
       CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
 
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
-      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y" # TLS1.3 support isn't enabled by default in IDF 5.1.5
+      #CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y" # TLS1.3 support isn't enabled by default in IDF 5.1.5
+      CONFIG_MBEDTLS_DYNAMIC_BUFFER: "y"
+      CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN: "16384"
+      # Keep AES in hardware for HTTPS media/TTS worst-case testing. The AFE
+      # bridge buffers below live in PSRAM to preserve contiguous DMA heap.
+      CONFIG_MBEDTLS_HARDWARE_AES: "y"
 
 psram:
   mode: octal
@@ -122,19 +125,6 @@ api:
         - voice_assistant.stop
 
 globals:
-  - id: thresh_percent
-    type: float
-    initial_value: "0.03"
-    restore_value: false
-  - id: touch_calibration_values_left
-    type: uint32_t[5]
-    restore_value: false
-  - id: touch_calibration_values_center
-    type: uint32_t[5]
-    restore_value: false
-  - id: touch_calibration_values_right
-    type: uint32_t[5]
-    restore_value: false
   - id: booted
     type: bool
     restore_value: false
@@ -158,109 +148,6 @@ globals:
     initial_value: '0'
 
 interval:
-  - interval: 1s # NOTE still needed with 2026.3 and up
-    then:
-      # - logger.log: "Running touch self-calibration"
-      - lambda: |-
-          // Run calibration for all 3 buttons in one go, so the sensor is only stopped/restarted once
-          struct TouchAccessor : public esphome::esp32_touch::ESP32TouchBinarySensor {
-            touch_channel_handle_t get_chan_handle() { return this->chan_handle_; }
-          };
-
-          static uint8_t thresh_indices[3] = {0, 0, 0};
-          static uint32_t sums[3] = {0, 0, 0};
-          static uint8_t qsizes[3] = {0, 0, 0};
-          static uint16_t consecutive_anomalies_per_button[3] = {0, 0, 0};
-
-          esphome::esp32_touch::ESP32TouchBinarySensor* sensors[3] = {
-            id(volume_down), id(action), id(volume_up)
-          };
-          uint32_t* calibration_arrays[3] = {
-            id(touch_calibration_values_left),
-            id(touch_calibration_values_center),
-            id(touch_calibration_values_right)
-          };
-
-          // Calculate new thresholds for all 3 buttons
-          bool any_update = false;
-          touch_channel_handle_t chan_handles[3];
-
-          // Extract sens_handle directly from chan_handles to avoid Component iteration and `final` inheritance restrictions
-          struct touch_channel_dummy_s {
-            touch_sensor_handle_t base;
-            int id;
-          };
-
-          for (int btn = 0; btn < 3; btn++) {
-            chan_handles[btn] = static_cast<TouchAccessor*>(sensors[btn])->get_chan_handle();
-          }
-          if (!chan_handles[0]) {
-            ESP_LOGE("touch_calibration", "Touch channels not initialized");
-            return;
-          }
-          touch_sensor_handle_t sens_handle = reinterpret_cast<touch_channel_dummy_s*>(chan_handles[0])->base;
-
-          bool needs_update[3] = {false, false, false};
-
-          for (int btn = 0; btn < 3; btn++) {
-            uint32_t* calibration_values = calibration_arrays[btn];
-
-            uint32_t newval = 0;
-            touch_channel_read_data(chan_handles[btn], TOUCH_CHAN_DATA_TYPE_SMOOTH, &newval);
-
-            if (newval == 0) {
-              ESP_LOGW("touch_calibration", "[%d] Read 0 as value, skipping calibration", btn);
-              continue;
-            }
-
-            if (qsizes[btn] == 5) {
-              float avg = float(sums[btn]) / float(qsizes[btn]);
-              if ((fabs(float(newval) - avg) / avg) > id(thresh_percent)) {
-                consecutive_anomalies_per_button[btn]++;
-                if (consecutive_anomalies_per_button[btn] < 10)
-                  continue;
-              }
-            }
-
-            consecutive_anomalies_per_button[btn] = 0;
-
-            if (qsizes[btn] == 5) {
-              sums[btn] -= (uint32_t)*(calibration_values + thresh_indices[btn]);
-              qsizes[btn]--;
-            }
-            *(calibration_values + thresh_indices[btn]) = newval;
-            sums[btn] += newval;
-            qsizes[btn]++;
-            thresh_indices[btn] = (thresh_indices[btn] + 1) % 5;
-
-            uint32_t avg = sums[btn] / qsizes[btn];
-            uint32_t delta = uint32_t(avg * id(thresh_percent));
-            if (delta < 100) delta = 100;
-
-            uint32_t old_delta = sensors[btn]->get_threshold();
-            if (abs((int)delta - (int)old_delta) > 5) {
-              sensors[btn]->set_threshold(delta);
-
-              needs_update[btn] = true;
-              any_update = true;
-            }
-          }
-
-          // Set the threshold directly via the low-level hardware register.
-          // This avoids the need to call touch_sensor_reconfig_channel() 
-          // and prevents ESP-IDF from complaining about the sensor not being disabled.
-          if (any_update) {
-            for (int btn = 0; btn < 3; btn++) {
-              if (needs_update[btn]) {
-                auto chan = reinterpret_cast<touch_channel_dummy_s*>(chan_handles[btn]);
-                if (chan && chan->id > 0) {
-                  uint32_t delta = sensors[btn]->get_threshold();
-                  set_touch_threshold(chan->id, delta);
-                  ESP_LOGD("touch_calibration", "[%d] Set new threshold to %u (Channel %d)", btn, delta, chan->id);
-                }
-              }
-            }
-          }
 
   - interval: 2s
     then:
@@ -315,32 +202,23 @@ micro_wake_word: # requires 16khz input currently
               wake_word: !lambda return wake_word;
 
 number:
-  - platform: template
-    name: "Touch threshold percentage"
-    id: touch_threshold_percentage
-    update_interval: never
-    entity_category: config
-    initial_value: 0.5
-    min_value: 0.25
-    max_value: 5
-    step: 0.05
-    optimistic: true
-    on_value:
-      then:
-        - lambda: |-
-            id(thresh_percent) = 0.01 * x;
   #- platform: intercom_api
   #  intercom_api_id: intercom
   #  speaker_volume:
   #    id: speaker_volume
   #    name: "Speaker Volume"
-  - platform: i2s_audio_duplex
-    i2s_audio_duplex_id: i2s_shared
+
+  - platform: esp_audio_stack
+    esp_audio_stack_id: i2s_shared
+    master_volume:
+      id: master_volume
+      name: Master Volume
+      speaker_id: onju_out
     mic_gain:
+      id: mic_gain
       name: Mic Gain
-    mic_gain_pre_aec:
-      name: Mic Gain Pre-AEC
-      pre_aec: true
+      min_value: -20
+      max_value: 30
 
 select:
   - platform: template
@@ -370,15 +248,16 @@ select:
           id(okay_nabu).set_probability_cutoff(143);    // 0.56 -> 0.751 FAPH on DipCo
         }
 
-intercom_api:
-  id: intercom
-  mode: simple
-  microphone: i2s_mics
-  speaker: media_spk_resampling_input
-  dc_offset_removal: false
-  ringing_timeout: 30s
+# intercom_api:
+#   task_stacks_in_psram: true   # save ~28KB internal heap on S3 by placing task stacks in PSRAM
+#   buffers_in_psram: true # Intercom staging buffers in PSRAM; AEC/AFE buffers live in esp_audio_stack
+#   microphone: i2s_mics
+#   speaker: media_spk_resampling_input
+#   ringing_timeout: 30s
+#   delete_contact_missing_from:
+#     updates_number: 1
 
-i2s_audio_duplex:
+esp_audio_stack:
   id: i2s_shared
   i2s_lrclk_pin: GPIO13
   i2s_bclk_pin: GPIO18
@@ -386,7 +265,8 @@ i2s_audio_duplex:
   i2s_dout_pin: GPIO12
   sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
   output_sample_rate: 16000 # Mic/AEC/MWW/VA decimated to 16kHz via FIR x3
-  aec_id: aec_processor
+  processor_id: aec_processor
+  # aec_reference: previous_frame
   slot_bit_width: 32 # SPH0645 needs 32-bit I2S frames
   correct_dc_offset: true # removes DC bias from SPH0645 MEMS mics
   mic_channel: right # which stereo slot carries the mic
@@ -397,14 +277,14 @@ i2s_audio_duplex:
 esp_aec:
   id: aec_processor
   sample_rate: 16000 # AEC is always at 16kHz (= output_sample_rate)
-  mode: sr_high_perf
+  mode: sr_low_cost
   filter_length: 4 # 64ms tail — sufficient for integrated codec path
 
 speaker:
   # Hardware speaker output
-  - platform: i2s_audio_duplex
+  - platform: esp_audio_stack
     id: onju_out
-    i2s_audio_duplex_id: i2s_shared
+    esp_audio_stack_id: i2s_shared
     sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
 
   # Virtual speakers to combine the announcement and media streams together into one output
@@ -448,9 +328,9 @@ speaker:
     # task_stack_in_psram: true
 
 microphone:
-  - platform: i2s_audio_duplex
+  - platform: esp_audio_stack
     id: i2s_mics
-    i2s_audio_duplex_id: i2s_shared
+    esp_audio_stack_id: i2s_shared
 
 media_player:
   - platform: speaker
@@ -644,17 +524,17 @@ voice_assistant: # need to use a 16khz due to mww
 
 esp32_touch:
   setup_mode: false
-  sleep_duration: 2ms
+  sleep_duration: 500us
   measurement_duration: 250us
   low_voltage_reference: 0.8V
   high_voltage_reference: 2.4V
-  filter_mode: IIR_16
-  debounce_count: 2
-  noise_threshold: 3
-  jitter_step: 4
-  smooth_mode: IIR_4
-  denoise_grade: BIT8
-  denoise_cap_level: L0
+  #filter_mode: IIR_16
+  #debounce_count: 2
+  #noise_threshold: 3
+  #jitter_step: 4
+  #smooth_mode: IIR_4
+  #denoise_grade: BIT8
+  #denoise_cap_level: L0
 
 button:
   - platform: restart
@@ -671,7 +551,7 @@ binary_sensor:
     name: "VOL-"
     icon: mdi:volume-minus
     disabled_by_default: true
-    threshold: 1000
+    threshold: 2000 # 1000 to 3000 should be a good value (lower = more sensitive)
     on_press:
       then:
         - light.turn_on: left_led
@@ -697,7 +577,7 @@ binary_sensor:
     name: "VOL+"
     icon: mdi:volume-plus
     disabled_by_default: true
-    threshold: 1000
+    threshold: 2000 # 1000 to 3000 should be a good value (lower = more sensitive)
     on_press:
       then:
         - light.turn_on: right_led
@@ -720,7 +600,7 @@ binary_sensor:
   - platform: esp32_touch
     id: action
     pin: GPIO3
-    threshold: 1000
+    threshold: 2000 # 1000 to 3000 should be a good value (lower = more sensitive)
     on_multi_click:
     - timing: # single click
       - ON for at most 1s
