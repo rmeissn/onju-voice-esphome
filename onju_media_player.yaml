@@ -1,0 +1,786 @@
+# NOTE: Works ok, but is slow due the need to change the i2s direction and usage between speaker and microphone
+
+substitutions:
+  name: "onju-voice"
+  friendly_name: "Onju Voice Common Code"
+  project_version: "1.2.0"
+  device_description: "Common code for the onju voice, to be included in all onju voice devices"
+  error_sound_url: "http://192.168.0.202:8123/local/error.flac" # Error #8 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734442/
+  mute_sound_url: "http://192.168.0.202:8123/local/mute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_disconnected.flac
+  unmute_sound_url: "http://192.168.0.202:8123/local/unmute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_connected.flac
+  knock_sound_url: "http://192.168.0.202:8123/local/knock.flac" # https://freesound.org/people/UberBosser/sounds/421585/
+  click_sound_url: "http://192.168.0.202:8123/local/tongue-click.flac" # https://freesound.org/people/MichellePamelaLyons/sounds/135515/
+  alarm_sound_url: "http://192.168.0.202:8123/local/alarm.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
+  # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
+
+esphome:
+  name: "${name}"
+  friendly_name: "${friendly_name}"
+  comment: "${device_description}"
+  min_version: 2026.7.0
+  name_add_mac_suffix: true
+  project:
+    name: rmeissn.onju-voice-esphome
+    version: "${project_version}"
+  on_boot:
+    then:
+      - light.turn_on:
+          id: top_led
+          effect: booting
+          red: 0%
+          green: 0%
+          blue: 100%
+      - wait_until:
+          condition:
+            wifi.connected:
+      - light.turn_on:
+          id: top_led
+          effect: booting
+          red: 0%
+          green: 100%
+          blue: 100%
+      - wait_until:
+          condition:
+            api.connected:
+      - light.turn_on:
+          id: top_led
+          effect: pulse
+          red: 0%
+          green: 100%
+          blue: 0%
+      - delay: 1s
+      - lambda: id(booted) = true;
+      - lambda: id(led_state) = "idle";
+      - script.execute: controle_leds
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  cpu_frequency: 240MHz
+  flash_size: 16MB
+  # partitions: partitions.csv # NOTE only applicable if flashed via cable. DO NOT FLASH VIA OTA. Check partions.csv for completeness and soundness first
+  framework:
+    type: esp-idf
+    version: recommended
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y"
+
+      # Moves instructions and read only data from flash into PSRAM on boot.
+      # Both enabled allows instructions to execute while a flash operation is in progress without needing to be placed in IRAM.
+      # Considerably speeds up mWW at the cost of using more PSRAM.
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+
+      CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
+      CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
+
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y" # TLS1.3 support isn't enabled by default in IDF 5.1.5
+
+psram:
+  mode: octal
+  speed: 80MHz
+  ignore_not_found: false # The VPE has PSRAM, so this is safe. Allows configuring WiFi driver to use more resources (done automatically by the speaker media player)
+
+# Enable logging
+logger:
+  # level: debug
+  baud_rate: 0
+  # initial_level: debug
+  # logs:
+  #  sensor: WARN
+
+wifi:
+  ssid: to_be_overwritten
+
+captive_portal:
+
+network:
+  enable_ipv6: true
+
+api:
+
+globals:
+  - id: booted
+    type: bool
+    restore_value: false
+  - id: internal_flicker
+    type: bool
+    restore_value: false
+  - id: led_state
+    type: std::string
+    restore_value: no
+    initial_value: '"booting"'
+  - id: old_volume_level
+    type: float
+    restore_value: no
+    initial_value: "0.5"
+  - id: connection_error_count
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+interval:
+  - interval: 2s
+    then:
+      - if:
+          condition:
+            and:
+              - lambda: return id(booted);
+              - or:
+                  - not:
+                      wifi.connected:
+                  - not:
+                      api.connected:
+          then:
+            - lambda: id(connection_error_count) += 1;
+            - if:
+                condition:
+                  lambda: return id(connection_error_count) >= 5 && id(led_state) != "connection_error";
+                then:
+                  - lambda: id(led_state) = "connection_error";
+                  - script.execute: controle_leds
+          else:
+            - lambda: id(connection_error_count) = 0;
+            - if:
+                condition:
+                  lambda: return id(led_state) == "connection_error";
+                then:
+                  - lambda: id(led_state) = "idle";
+                  - script.execute: controle_leds
+
+i2s_audio:
+  - id: i2s_speaker
+    i2s_lrclk_pin: GPIO13 # WS / LRCLK
+    i2s_bclk_pin: GPIO18 # SCK / BCLK
+
+speaker:
+  # Hardware speaker output
+  - platform: i2s_audio
+    id: i2s_audio_speaker
+    dac_type: external
+    channel: mono
+    sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
+    bits_per_sample: 32bit # DAC supports 16/24/32  bit
+    use_apll: true
+    i2s_mode: primary
+    i2s_audio_id: i2s_speaker
+    i2s_dout_pin: GPIO12 # SDO / Din
+    buffer_duration: 150ms # increased from 100ms to prevent audio from cutting of on e.g. network issues
+    timeout: never
+
+  # Virtual speakers to combine the announcement and media streams together into one output
+  - platform: mixer
+    id: mixing_speaker
+    output_speaker: i2s_audio_speaker
+    num_channels: 1
+    task_stack_in_psram: true
+    source_speakers:
+      - id: announcement_mixing_input
+        timeout: never
+      - id: media_mixing_input
+        timeout: never
+
+  # Virtual speakers to resample each pipelines' audio, if necessary, as the mixer speaker requires the same sample rate
+  - platform: resampler
+    id: announcement_resampling_speaker
+    output_speaker: announcement_mixing_input
+    sample_rate: 48000
+    bits_per_sample: 16
+    num_channels: 1
+  - platform: resampler
+    id: media_resampling_speaker
+    output_speaker: media_mixing_input
+    sample_rate: 48000
+    bits_per_sample: 16
+    num_channels: 1
+
+sendspin:
+  id: sendspin_hub
+  task_stack_in_psram: false
+
+audio_file:
+  - id: error
+    file: ${error_sound_url}
+  - id: mute
+    file: ${mute_sound_url}
+  - id: unmute
+    file: ${unmute_sound_url}
+  # - id: alarm_sound
+  #   file: ${alarm_sound_url}
+
+media_source:
+  - platform: audio_file
+    id: audio_file_announcement_source
+  - platform: audio_http
+    id: http_announcement_source
+    buffer_size: 250000
+  - platform: audio_http
+    id: http_media_source
+    buffer_size: 500000
+  - platform: sendspin
+    id: sendspin_media_source
+    #fixed_delay: 480 microseconds
+
+media_player:
+  - platform: sendspin
+    id: sendspin_group_media_player
+  - platform: speaker_source
+    id: external_media_player
+    name: Media Player
+    announcement_pipeline:
+      format: FLAC # FLAC is the least processor intensive codec
+      num_channels: 1 # Stereo audio is unnecessary for announcements
+      sample_rate: 48000
+      speaker: announcement_resampling_speaker
+      sources:
+        - audio_file_announcement_source
+        - http_announcement_source
+    media_pipeline:
+      format: FLAC # FLAC is the least processor intensive codec
+      num_channels: 1
+      sample_rate: 48000
+      speaker: media_resampling_speaker
+      sources:
+        - http_media_source
+        - sendspin_media_source
+    volume_increment: 0.05
+    volume_min: 0
+    volume_max: 1
+    on_state:
+      then:
+        - lambda: |-
+            static float old_volume = -1;
+            float new_volume = id(external_media_player).volume;
+            if(abs(new_volume-old_volume) > 0.0001) {
+              if(old_volume != -1) {
+                if(!id(alarm_siren).state) {
+                  id(show_volume)->execute();
+                }
+              }
+            }
+            old_volume = new_volume;
+    on_announcement:
+      - logger.log: "On Announce"
+    on_play:
+      - logger.log: "On Play"
+      - lambda: id(internal_flicker) = false; # needed to deactivate flicker on audio playback
+      - if:
+          condition:
+            not:
+              script.is_running: show_volume
+          then:
+            - script.execute: controle_leds
+    on_pause:
+      - logger.log: "On Pause"
+      - if:
+          condition:
+            and:
+              - not:
+                  switch.is_on: alarm_siren
+          then:
+            - lambda: id(internal_flicker) = true; # activated flicker on pause
+            - if:
+                condition:
+                  not:
+                    script.is_running: show_volume
+                then:
+                  - lambda: id(led_state) = "idle";
+                  - script.execute: controle_leds
+    on_idle: # also called after announcement finished, is triggered on volume change
+      - logger.log: "On IDLE"
+      - if:
+          condition:
+            and:
+              - not:
+                  switch.is_on: alarm_siren
+          then:
+            - lambda: id(internal_flicker) = true; # needed to activate flicker on idle
+            - if:
+                condition:
+                  not:
+                    script.is_running: show_volume
+                then:
+                  - lambda: id(led_state) = "idle";
+                  - script.execute: controle_leds
+
+esp32_touch:
+  setup_mode: false
+  sleep_duration: 500us # prev. 2ms
+  measurement_duration: 250us
+  low_voltage_reference: 0.8V
+  high_voltage_reference: 2.4V
+  #filter_mode: IIR_16
+  #debounce_count: 2
+  #noise_threshold: 3
+  #jitter_step: 4
+  #smooth_mode: IIR_4
+  #denoise_grade: BIT8
+  #denoise_cap_level: L0
+
+button:
+  - platform: restart
+    id: restart_button
+    name: "Restart"
+    entity_category: config
+    disabled_by_default: true
+    icon: "mdi:restart"
+
+binary_sensor:
+  - platform: esp32_touch
+    id: volume_down
+    pin: GPIO4
+    name: "VOL-"
+    icon: mdi:volume-minus
+    disabled_by_default: true
+    threshold: 2000 # 1000 to 3000 should be a good value (lower = more sensitive)
+    on_press:
+      then:
+        - light.turn_on: left_led
+        - script.execute:
+            id: set_volume
+            volume: -0.05
+        - delay: 750ms
+        - while:
+            condition:
+              binary_sensor.is_on: volume_down
+            then:
+              - script.execute:
+                  id: set_volume
+                  volume: -0.05
+              - delay: 150ms
+    on_release:
+      then:
+        - light.turn_off: left_led
+
+  - platform: esp32_touch
+    id: volume_up
+    pin: GPIO2
+    name: "VOL+"
+    icon: mdi:volume-plus
+    disabled_by_default: true
+    threshold: 2000 # 1000 to 3000 should be a good value (lower = more sensitive)
+    on_press:
+      then:
+        - light.turn_on: right_led
+        - script.execute:
+            id: set_volume
+            volume: 0.05
+        - delay: 750ms
+        - while:
+            condition:
+              binary_sensor.is_on: volume_up
+            then:
+              - script.execute:
+                  id: set_volume
+                  volume: 0.05
+              - delay: 150ms
+    on_release:
+      then:
+        - light.turn_off: right_led
+
+  - platform: esp32_touch
+    id: action
+    pin: GPIO3
+    threshold: 2000 # 1000 to 3000 should be a good value (lower = more sensitive)
+    on_multi_click:
+      - timing: # single click
+          - ON for at most 1s
+          - OFF for at least 0.5s
+        then:
+          - if: # switch between pause/play
+              condition:
+                or:
+                  - media_player.is_playing:
+                      id: external_media_player
+                  - media_player.is_paused:
+                      id: external_media_player
+              then:
+                - media_player.toggle:
+                    id: external_media_player
+      - timing: # double click
+          - ON for at most 0.5s
+          - OFF for at most 0.5s
+          - ON for at most 0.5s
+          - OFF for at least 0.25s
+        then:
+          - event.trigger:
+              id: button_press_event
+              event_type: "double_press"
+      - timing: # triple click
+          - ON for at most 0.5s
+          - OFF for at most 0.5s
+          - ON for at most 0.5s
+          - OFF for at most 0.5s
+          - ON for at most 0.5s
+          - OFF for at least 0.25s
+        then:
+          - event.trigger:
+              id: button_press_event
+              event_type: "triple_press"
+      - timing: # long press, reset everything
+          - ON for 1s to 3s
+          - OFF for at least 0.25s
+        then:
+          - logger.log: "Long Press - Resetting components"
+          - light.turn_on:
+              id: top_led
+              red: 100%
+              green: 0%
+              blue: 0%
+              brightness: 100%
+              effect: pulse
+          - media_player.stop:
+              id: external_media_player
+          - wait_until:
+              not:
+                speaker.is_playing:
+                  id: i2s_audio_speaker
+          - lambda: id(led_state) = "idle";
+          - script.execute: controle_leds
+          - delay: 100ms
+          - event.trigger:
+              id: button_press_event
+              event_type: "long_press"
+
+  - platform: gpio
+    id: hardware_mute_switch
+    internal: true
+    pin:
+      number: GPIO38
+      mode: INPUT_PULLUP
+    icon: mdi:microphone-message-off
+    name: "Muted (Hardware Switch)"
+    on_press:
+      - if:
+          condition:
+            - switch.is_off: master_mute_switch
+          then:
+            # - media_player.speaker.play_on_device_media_file:
+            #     media_file: mute
+            #     announcement: true
+            # - wait_until:
+            #     speaker.is_playing:
+            #       id: announcement_resampling_speaker
+            # - wait_until:
+            #     not:
+            #       speaker.is_playing:
+            #         id: announcement_resampling_speaker
+    on_release:
+      # - media_player.speaker.play_on_device_media_file:
+      #     media_file: unmute
+      #     announcement: true
+      # - wait_until:
+      #     speaker.is_playing:
+      #       id: announcement_resampling_speaker
+      # - wait_until:
+      #     not:
+      #       speaker.is_playing:
+      #         id: announcement_resampling_speaker
+      - delay: 100ms
+      - switch.turn_off: master_mute_switch
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+    disabled_by_default: true
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+    disabled_by_default: true
+
+debug:
+text_sensor:
+  - platform: debug
+    reset_reason:
+      name: "Restart Reason"
+      disabled_by_default: true
+
+event:
+  # Event entity exposed to the user to automate on complex center button presses.
+  # The simple press is not exposed as it is used to control the device itself.
+  - platform: template
+    id: button_press_event
+    name: "Button press"
+    icon: mdi:button-pointer
+    device_class: button
+    event_types:
+      - double_press
+      - triple_press
+      - long_press
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: leds
+    pin: GPIO11
+    chipset: SK6812
+    num_leds: 6
+    rgb_order: grb
+    default_transition_length: 0s
+    gamma_correct: 2.8
+  - platform: partition
+    id: left_led
+    segments:
+      - id: leds
+        from: 0
+        to: 0
+    default_transition_length: 100ms
+  - platform: partition
+    id: top_led
+    segments:
+      - id: leds
+        from: 1
+        to: 4
+    default_transition_length: 100ms
+    effects:
+      - pulse:
+          name: pulse
+          transition_length: 250ms
+          update_interval: 250ms
+      - addressable_scan:
+          name: booting
+          move_interval: 100ms
+          scan_width: 1
+      - pulse:
+          name: slow_pulse
+          transition_length: 1s
+          update_interval: 2s
+      - pulse:
+          name: timer_pulse
+          transition_length: 250ms
+          update_interval: 250ms
+          min_brightness: 50%
+          max_brightness: 100%
+      - addressable_twinkle:
+          name: listening_ww
+          twinkle_probability: 1%
+      - pulse:
+          name: listening
+          transition_length: 0.5s
+          update_interval: 0.5s
+          min_brightness: 0%
+          max_brightness: 100%
+      - addressable_scan:
+          name: thinking
+          move_interval: 80ms
+          scan_width: 1
+      - pulse:
+          name: speaking
+          transition_length: 250ms
+          update_interval: 250ms
+          min_brightness: 50%
+          max_brightness: 90%
+      - addressable_random_twinkle:
+          name: random_twinkle
+          twinkle_probability: 1%
+      - strobe:
+          name: alarm_strobe
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 200ms
+            - state: true
+              brightness: 100%
+              red: 0%
+              green: 0%
+              blue: 100%
+              duration: 200ms
+      - addressable_lambda:
+          name: show_volume
+          update_interval: 50ms
+          lambda: |-
+            int int_volume = int(id(external_media_player).volume * 100.0f * it.size());
+            int full_leds = int_volume / 100;
+            int last_brightness = int_volume % 100;
+            int i = 0;
+            for(; i < full_leds; i++) {
+              it[i] = Color::WHITE;
+            }
+            if(i < 4) {
+              it[i++] = Color(64, 64, 64).fade_to_white(last_brightness*256/100);
+            }
+            for(; i < it.size(); i++) {
+              it[i] = Color(64, 64, 64);
+            }
+  - platform: partition
+    id: right_led
+    segments:
+      - id: leds
+        from: 5
+        to: 5
+    default_transition_length: 100ms
+
+script:
+  - id: controle_leds
+    then:
+      - if:
+          condition:
+            lambda: return id(booted);
+          then:
+            - if:
+                condition:
+                  lambda: return id(led_state) == "idle";
+                then:
+                  - if:
+                      condition:
+                        switch.is_on: master_mute_switch
+                      then:
+                        - light.turn_on:
+                            id: top_led
+                            red: 100%
+                            green: 0%
+                            blue: 5%
+                            brightness: 30%
+                            effect: "none"
+                      else:
+                        - light.turn_off:
+                            id: top_led
+            - if:
+                condition:
+                  lambda: return id(led_state) == "error";
+                then:
+                  - light.turn_on:
+                      id: top_led
+                      blue: 0%
+                      red: 100%
+                      green: 0%
+                      effect: none
+            - if:
+                condition:
+                  lambda: return id(led_state) == "connection_error";
+                then:
+                  - light.turn_on:
+                      id: top_led
+                      red: 100%
+                      green: 0%
+                      blue: 0%
+                      effect: pulse
+            - if:
+                condition:
+                  lambda: return id(led_state) == "alarm";
+                then:
+                  - light.turn_on:
+                      id: top_led
+                      effect: alarm_strobe
+
+  - id: set_volume
+    mode: restart
+    parameters:
+      volume: float
+    then:
+      - media_player.volume_set:
+          id: external_media_player
+          volume: !lambda return clamp(id(external_media_player).volume+volume, 0.0f, 1.0f);
+
+  - id: show_volume
+    mode: restart
+    then:
+      - light.turn_on:
+          id: top_led
+          effect: show_volume
+      - delay: 1s
+      - if:
+          condition:
+            - not:
+                switch.is_on: alarm_siren
+          then:
+            - lambda: id(led_state) = "idle";
+      - script.execute: controle_leds
+
+  - id: play_alarm_loop
+    then:
+      - while:
+          condition:
+            - switch.is_on: alarm_siren
+          then:
+            # - media_player.speaker.play_on_device_media_file:
+            #     media_file: alarm_sound
+            #     announcement: true
+            # - wait_until:
+            #     speaker.is_playing:
+            #       id: announcement_resampling_speaker
+            # - wait_until:
+            #     not:
+            #       speaker.is_playing:
+            #   id: announcement_resampling_speaker
+            # - media_player.play_media:
+            #     id: external_media_player
+            #     media_url: "${alarm_sound_url}"
+            # - wait_until:
+            #     media_player.is_playing:
+            #       id: external_media_player
+            # - wait_until:
+            #     not:
+            #       media_player.is_playing:
+            #         id: external_media_player
+            - delay: 250ms
+
+switch:
+  # This is the master mute switch. It is exposed to Home Assistant. The user can only turn it on and off if the hardware switch is off. (The hardware switch overrides the software one)
+  - platform: template
+    id: master_mute_switch
+    restore_mode: RESTORE_DEFAULT_OFF
+    icon: "mdi:microphone-off"
+    name: Mute Microphone
+    entity_category: ""
+    optimistic: true
+    lambda: |-
+      // Muted either if the hardware mute switch is on or the microphone's software mute switch is enabled
+      if (id(hardware_mute_switch).state) {
+        return true;
+      } else {
+        return false;
+      }
+    on_turn_on:
+      - lambda: id(led_state) = "idle"; # idle handles checking the mute switch
+      - script.execute: controle_leds
+    on_turn_off:
+      - lambda: id(led_state) = "idle";
+      - script.execute: controle_leds
+
+  - platform: gpio
+    id: dac_mute
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: GPIO21
+      inverted: True
+
+  - platform: template
+    name: "Alarm Siren"
+    id: alarm_siren
+    icon: mdi:alarm-light
+    entity_category: ""
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      # Save volume
+      - lambda: id(old_volume_level) = id(external_media_player).volume;
+      - media_player.volume_set:
+          id: external_media_player
+          volume: 1.0
+      - script.execute: play_alarm_loop
+      - lambda: id(led_state) = "alarm";
+      - script.execute: controle_leds
+      # Timeout 5 minutes
+      - delay: 5min
+      - switch.turn_off: alarm_siren
+    on_turn_off:
+      - if:
+          condition:
+            media_player.is_playing:
+              id: external_media_player
+          then:
+            media_player.stop:
+              id: external_media_player
+      - media_player.volume_set:
+          id: external_media_player
+          volume: !lambda return id(old_volume_level);
+      - lambda: id(internal_flicker) = true;
+      - lambda: id(led_state) = "idle";
+      - script.execute: controle_leds
