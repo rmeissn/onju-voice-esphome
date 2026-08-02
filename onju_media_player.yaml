@@ -106,9 +106,6 @@ globals:
   - id: booted
     type: bool
     restore_value: false
-  - id: internal_flicker
-    type: bool
-    restore_value: false
   - id: led_state
     type: std::string
     restore_value: no
@@ -162,8 +159,8 @@ speaker:
     id: i2s_audio_speaker
     dac_type: external
     channel: mono
-    sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
-    bits_per_sample: 32bit # DAC supports 16/24/32  bit
+    sample_rate: 48000 # DAC supports 8kHz to 96kHz
+    bits_per_sample: 32bit # DAC supports 16/24/32 bit
     use_apll: true
     i2s_mode: primary
     i2s_audio_id: i2s_speaker
@@ -189,13 +186,11 @@ speaker:
     output_speaker: announcement_mixing_input
     sample_rate: 48000
     bits_per_sample: 16
-    num_channels: 1
   - platform: resampler
     id: media_resampling_speaker
     output_speaker: media_mixing_input
     sample_rate: 48000
     bits_per_sample: 16
-    num_channels: 1
 
 sendspin:
   id: sendspin_hub
@@ -208,7 +203,7 @@ audio_file:
     file: ${mute_sound_url}
   - id: unmute
     file: ${unmute_sound_url}
-  # - id: alarm_sound
+  # - id: alarm_sound # too large for the default onju partition
   #   file: ${alarm_sound_url}
 
 media_source:
@@ -222,6 +217,7 @@ media_source:
     buffer_size: 500000
   - platform: sendspin
     id: sendspin_media_source
+    decode_memory: internal
     #fixed_delay: 480 microseconds
 
 media_player:
@@ -232,7 +228,7 @@ media_player:
     name: Media Player
     announcement_pipeline:
       format: FLAC # FLAC is the least processor intensive codec
-      num_channels: 1 # Stereo audio is unnecessary for announcements
+      num_channels: 1
       sample_rate: 48000
       speaker: announcement_resampling_speaker
       sources:
@@ -262,11 +258,23 @@ media_player:
               }
             }
             old_volume = new_volume;
+        # if:
+        #   condition:
+        #     - not:
+        #         media_player.is_announcing: external_media_player
+        #   then:
+        #     - mixer_speaker.apply_ducking:
+        #         id: media_mixing_input
+        #         decibel_reduction: 0
+        #         duration: 1.0s
     on_announcement:
       - logger.log: "On Announce"
+      - mixer_speaker.apply_ducking:
+          id: media_mixing_input
+          decibel_reduction: 20
+          duration: 0.0s
     on_play:
       - logger.log: "On Play"
-      - lambda: id(internal_flicker) = false; # needed to deactivate flicker on audio playback
       - if:
           condition:
             not:
@@ -281,7 +289,6 @@ media_player:
               - not:
                   switch.is_on: alarm_siren
           then:
-            - lambda: id(internal_flicker) = true; # activated flicker on pause
             - if:
                 condition:
                   not:
@@ -297,7 +304,6 @@ media_player:
               - not:
                   switch.is_on: alarm_siren
           then:
-            - lambda: id(internal_flicker) = true; # needed to activate flicker on idle
             - if:
                 condition:
                   not:
@@ -308,17 +314,10 @@ media_player:
 
 esp32_touch:
   setup_mode: false
-  sleep_duration: 500us # prev. 2ms
+  sleep_duration: 500us
   measurement_duration: 250us
   low_voltage_reference: 0.8V
   high_voltage_reference: 2.4V
-  #filter_mode: IIR_16
-  #debounce_count: 2
-  #noise_threshold: 3
-  #jitter_step: 4
-  #smooth_mode: IIR_4
-  #denoise_grade: BIT8
-  #denoise_cap_level: L0
 
 button:
   - platform: restart
@@ -434,13 +433,14 @@ binary_sensor:
               effect: pulse
           - media_player.stop:
               id: external_media_player
+          - media_player.stop:
+              id: sendspin_group_media_player
           - wait_until:
               not:
                 speaker.is_playing:
                   id: i2s_audio_speaker
           - lambda: id(led_state) = "idle";
           - script.execute: controle_leds
-          - delay: 100ms
           - event.trigger:
               id: button_press_event
               event_type: "long_press"
@@ -458,27 +458,29 @@ binary_sensor:
           condition:
             - switch.is_off: master_mute_switch
           then:
-            # - media_player.speaker.play_on_device_media_file:
-            #     media_file: mute
-            #     announcement: true
-            # - wait_until:
-            #     speaker.is_playing:
-            #       id: announcement_resampling_speaker
-            # - wait_until:
-            #     not:
-            #       speaker.is_playing:
-            #         id: announcement_resampling_speaker
+            - media_player.play_media:
+                id: external_media_player
+                media_url: audio-file://mute
+                announcement: true
+            - wait_until:
+                speaker.is_playing:
+                  id: announcement_resampling_speaker
+            - wait_until:
+                not:
+                  speaker.is_playing:
+                    id: announcement_resampling_speaker
     on_release:
-      # - media_player.speaker.play_on_device_media_file:
-      #     media_file: unmute
-      #     announcement: true
-      # - wait_until:
-      #     speaker.is_playing:
-      #       id: announcement_resampling_speaker
-      # - wait_until:
-      #     not:
-      #       speaker.is_playing:
-      #         id: announcement_resampling_speaker
+      - media_player.play_media:
+          id: external_media_player
+          media_url: audio-file://unmute
+          announcement: true
+      - wait_until:
+          speaker.is_playing:
+            id: announcement_resampling_speaker
+      - wait_until:
+          not:
+            speaker.is_playing:
+              id: announcement_resampling_speaker
       - delay: 100ms
       - switch.turn_off: master_mute_switch
 
@@ -544,38 +546,6 @@ light:
           name: booting
           move_interval: 100ms
           scan_width: 1
-      - pulse:
-          name: slow_pulse
-          transition_length: 1s
-          update_interval: 2s
-      - pulse:
-          name: timer_pulse
-          transition_length: 250ms
-          update_interval: 250ms
-          min_brightness: 50%
-          max_brightness: 100%
-      - addressable_twinkle:
-          name: listening_ww
-          twinkle_probability: 1%
-      - pulse:
-          name: listening
-          transition_length: 0.5s
-          update_interval: 0.5s
-          min_brightness: 0%
-          max_brightness: 100%
-      - addressable_scan:
-          name: thinking
-          move_interval: 80ms
-          scan_width: 1
-      - pulse:
-          name: speaking
-          transition_length: 250ms
-          update_interval: 250ms
-          min_brightness: 50%
-          max_brightness: 90%
-      - addressable_random_twinkle:
-          name: random_twinkle
-          twinkle_probability: 1%
       - strobe:
           name: alarm_strobe
           colors:
@@ -699,19 +669,12 @@ script:
           condition:
             - switch.is_on: alarm_siren
           then:
-            # - media_player.speaker.play_on_device_media_file:
-            #     media_file: alarm_sound
-            #     announcement: true
-            # - wait_until:
-            #     speaker.is_playing:
-            #       id: announcement_resampling_speaker
-            # - wait_until:
-            #     not:
-            #       speaker.is_playing:
-            #   id: announcement_resampling_speaker
-            # - media_player.play_media:
-            #     id: external_media_player
-            #     media_url: "${alarm_sound_url}"
+            - media_player.play_media:
+                id: external_media_player
+                media_url: "${alarm_sound_url}"
+            - wait_until:
+                media_player.is_idle:
+                  id: external_media_player
             # - wait_until:
             #     media_player.is_playing:
             #       id: external_media_player
@@ -781,6 +744,5 @@ switch:
       - media_player.volume_set:
           id: external_media_player
           volume: !lambda return id(old_volume_level);
-      - lambda: id(internal_flicker) = true;
       - lambda: id(led_state) = "idle";
       - script.execute: controle_leds
