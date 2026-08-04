@@ -5,12 +5,13 @@ substitutions:
   friendly_name: "Onju Voice Common Code"
   project_version: "1.2.0"
   device_description: "Common code for the onju voice, to be included in all onju voice devices"
-  error_sound_url: "http://192.168.0.202:8123/local/error.flac" # Error #8 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734442/
-  mute_sound_url: "http://192.168.0.202:8123/local/mute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_disconnected.flac
-  unmute_sound_url: "http://192.168.0.202:8123/local/unmute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_connected.flac
-  knock_sound_url: "http://192.168.0.202:8123/local/knock.flac" # https://freesound.org/people/UberBosser/sounds/421585/
-  click_sound_url: "http://192.168.0.202:8123/local/tongue-click.flac" # https://freesound.org/people/MichellePamelaLyons/sounds/135515/
-  alarm_sound_url: "http://192.168.0.202:8123/local/alarm.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
+  ha_base_url: "http://192.168.0.202:8123"
+  error_sound_url: "${ha_base_url}/local/error.flac" # Error #8 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734442/
+  mute_sound_url: "${ha_base_url}/local/mute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_disconnected.flac
+  unmute_sound_url: "${ha_base_url}/local/unmute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_connected.flac
+  knock_sound_url: "${ha_base_url}/local/knock.flac" # https://freesound.org/people/UberBosser/sounds/421585/
+  click_sound_url: "${ha_base_url}/local/tongue-click.flac" # https://freesound.org/people/MichellePamelaLyons/sounds/135515/
+  alarm_sound_url: "${ha_base_url}/local/alarm.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
 
 esphome:
@@ -33,6 +34,7 @@ esphome:
       - wait_until:
           condition:
             wifi.connected:
+          timeout: 20s
       - light.turn_on:
           id: top_led
           effect: booting
@@ -42,6 +44,7 @@ esphome:
       - wait_until:
           condition:
             api.connected:
+          timeout: 20s
       - light.turn_on:
           id: top_led
           effect: pulse
@@ -62,22 +65,29 @@ esp32:
   framework:
     type: esp-idf
     version: recommended
+    advanced:
+      compiler_optimization: PERF
+      execute_from_psram: true
     sdkconfig_options:
       CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
       CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
       CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y"
 
-      # Moves instructions and read only data from flash into PSRAM on boot.
-      # Both enabled allows instructions to execute while a flash operation is in progress without needing to be placed in IRAM.
-      # Considerably speeds up mWW at the cost of using more PSRAM.
-      CONFIG_SPIRAM_RODATA: "y"
-      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      #CONFIG_SPIRAM_RODATA: "y"
+      #CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "4096"
+      CONFIG_SPIRAM_TRY_ALLOCATE_BF_WITH_ESP_ERR: "y"
 
       CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
       CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
 
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
-      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y" # TLS1.3 support isn't enabled by default in IDF 5.1.5
+      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y"
+
+      CONFIG_ESP_WIFI_EXTRA_IRAM_OPT: "y"
+
+      # CONFIG_COMPILER_OPTIMIZATION_PERF: "y"
+      # CONFIG_FREERTOS_HZ: "1000"             # 1ms FreeRTOS Tick-Rate, testen
 
 psram:
   mode: octal
@@ -211,10 +221,10 @@ media_source:
     id: audio_file_announcement_source
   - platform: audio_http
     id: http_announcement_source
-    buffer_size: 250000
+    buffer_size: 65536 # von 250KB auf 64KB reduziert für sofortigen Durchsage-Start
   - platform: audio_http
     id: http_media_source
-    buffer_size: 500000
+    buffer_size: 131072 # von 500KB auf 128KB reduziert für <1s Stream-Start
   - platform: sendspin
     id: sendspin_media_source
     decode_memory: internal
@@ -227,7 +237,7 @@ media_player:
     id: external_media_player
     name: Media Player
     announcement_pipeline:
-      format: FLAC # FLAC is the least processor intensive codec
+      format: OPUS # FLAC is the least processor intensive codec, OPUS for fighting wifi instability
       num_channels: 1
       sample_rate: 48000
       speaker: announcement_resampling_speaker
@@ -235,7 +245,7 @@ media_player:
         - audio_file_announcement_source
         - http_announcement_source
     media_pipeline:
-      format: FLAC # FLAC is the least processor intensive codec
+      format: OPUS # FLAC is the least processor intensive codec, OPUS for fighting wifi instability
       num_channels: 1
       sample_rate: 48000
       speaker: media_resampling_speaker
@@ -258,15 +268,15 @@ media_player:
               }
             }
             old_volume = new_volume;
-        # if:
-        #   condition:
-        #     - not:
-        #         media_player.is_announcing: external_media_player
-        #   then:
-        #     - mixer_speaker.apply_ducking:
-        #         id: media_mixing_input
-        #         decibel_reduction: 0
-        #         duration: 1.0s
+        - if:
+            condition:
+              - not:
+                  media_player.is_announcing: external_media_player
+            then:
+              - mixer_speaker.apply_ducking:
+                  id: media_mixing_input
+                  decibel_reduction: 0
+                  duration: 1.0s
     on_announcement:
       - logger.log: "On Announce"
       - mixer_speaker.apply_ducking:
@@ -396,6 +406,8 @@ binary_sensor:
                       id: external_media_player
                   - media_player.is_paused:
                       id: external_media_player
+                  - media_player.is_idle:
+                      id: external_media_player
               then:
                 - media_player.toggle:
                     id: external_media_player
@@ -419,11 +431,6 @@ binary_sensor:
           - event.trigger:
               id: button_press_event
               event_type: "triple_press"
-      - timing: # long press, reset everything
-          - ON for 1s to 3s
-          - OFF for at least 0.25s
-        then:
-          - logger.log: "Long Press - Resetting components"
           - light.turn_on:
               id: top_led
               red: 100%
@@ -436,11 +443,20 @@ binary_sensor:
           - media_player.stop:
               id: sendspin_group_media_player
           - wait_until:
-              not:
-                speaker.is_playing:
-                  id: i2s_audio_speaker
+              condition:
+                not:
+                  speaker.is_playing:
+                    id: i2s_audio_speaker
+              timeout: 3s
           - lambda: id(led_state) = "idle";
           - script.execute: controle_leds
+          - event.trigger:
+              id: button_press_event
+              event_type: "long_press"
+      - timing: # long press
+          - ON for 1s to 3s
+          - OFF for at least 0.25s
+        then:
           - event.trigger:
               id: button_press_event
               event_type: "long_press"
@@ -463,24 +479,32 @@ binary_sensor:
                 media_url: audio-file://mute
                 announcement: true
             - wait_until:
-                speaker.is_playing:
-                  id: announcement_resampling_speaker
-            - wait_until:
-                not:
+                condition:
                   speaker.is_playing:
                     id: announcement_resampling_speaker
+                timeout: 2s
+            - wait_until:
+                condition:
+                  not:
+                    speaker.is_playing:
+                      id: announcement_resampling_speaker
+                timeout: 3s
     on_release:
       - media_player.play_media:
           id: external_media_player
           media_url: audio-file://unmute
           announcement: true
       - wait_until:
-          speaker.is_playing:
-            id: announcement_resampling_speaker
-      - wait_until:
-          not:
+          condition:
             speaker.is_playing:
               id: announcement_resampling_speaker
+          timeout: 2s
+      - wait_until:
+          condition:
+            not:
+              speaker.is_playing:
+                id: announcement_resampling_speaker
+          timeout: 3s
       - delay: 100ms
       - switch.turn_off: master_mute_switch
 
@@ -673,15 +697,21 @@ script:
                 id: external_media_player
                 media_url: "${alarm_sound_url}"
             - wait_until:
-                media_player.is_idle:
-                  id: external_media_player
+                condition:
+                  media_player.is_idle:
+                    id: external_media_player
+                timeout: 5s
             # - wait_until:
-            #     media_player.is_playing:
-            #       id: external_media_player
-            # - wait_until:
-            #     not:
+            #     condition:
             #       media_player.is_playing:
             #         id: external_media_player
+            #     timeout: 2s
+            # - wait_until:
+            #     condition:
+            #       not:
+            #         media_player.is_playing:
+            #           id: external_media_player
+            #     timeout: 5s
             - delay: 250ms
 
 switch:
