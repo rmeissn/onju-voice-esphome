@@ -1,11 +1,11 @@
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  #fast_connect: True
-  enable_rrm: True
-  enable_btm: True
-  # power_save_mode: NONE
-  # domain: .local
+  fast_connect: False
+  enable_rrm: true
+  enable_btm: true
+  power_save_mode: NONE
+  domain: .fritz.box
   ap:
     ssid: "Onju-Voice"
     password: !secret fallback_ap_password
