@@ -103,7 +103,31 @@ logger:
   #  sensor: WARN
 
 wifi:
+  id: wifi_id
   ssid: to_be_overwritten
+  # on_connect:
+  #   - delay: 5s # Give time for Improv BLE result transmission
+  #   - ble.disable:
+  #   - lambda: id(improv_ble_in_progress) = false;
+  #   - script.execute: controle_leds
+  # on_disconnect:
+  #   - ble.enable:
+  #   - script.execute: controle_leds
+
+# esp32_ble:
+#   name: "${friendly_name}"
+
+# esp32_improv:
+#   authorizer: action # Uses center touch button to authorize provisioning if needed
+#   on_start:
+#     - lambda: id(improv_ble_in_progress) = true;
+#     - script.execute: controle_leds
+#   on_provisioned:
+#     - lambda: id(improv_ble_in_progress) = false;
+#     - script.execute: controle_leds
+#   on_stop:
+#     - lambda: id(improv_ble_in_progress) = false;
+#     - script.execute: controle_leds
 
 captive_portal:
 
@@ -111,6 +135,7 @@ network:
   enable_ipv6: true
 
 api:
+  id: api_id
 
 globals:
   - id: booted
@@ -124,39 +149,78 @@ globals:
     type: float
     restore_value: no
     initial_value: "0.5"
-  - id: connection_error_count
+  - id: wifi_error_count
     type: int
     restore_value: no
     initial_value: "0"
+  - id: api_error_count
+    type: int
+    restore_value: no
+    initial_value: "0"
+  - id: improv_ble_in_progress
+    type: bool
+    restore_value: no
+    initial_value: "false"
 
 interval:
   - interval: 2s
     then:
       - if:
           condition:
-            and:
-              - lambda: return id(booted);
-              - or:
-                  - not:
-                      wifi.connected:
-                  - not:
-                      api.connected:
+            lambda: return id(booted);
           then:
-            - lambda: id(connection_error_count) += 1;
+            # Check WiFi status
             - if:
                 condition:
-                  lambda: return id(connection_error_count) >= 5 && id(led_state) != "connection_error";
+                  not:
+                    wifi.connected:
                 then:
-                  - lambda: id(led_state) = "connection_error";
-                  - script.execute: controle_leds
-          else:
-            - lambda: id(connection_error_count) = 0;
+                  - lambda: id(wifi_error_count) += 1;
+                else:
+                  - lambda: id(wifi_error_count) = 0;
+            # Check HA API status
             - if:
                 condition:
-                  lambda: return id(led_state) == "connection_error";
+                  not:
+                    api.connected:
                 then:
-                  - lambda: id(led_state) = "idle";
-                  - script.execute: controle_leds
+                  - lambda: id(api_error_count) += 1;
+                else:
+                  - lambda: id(api_error_count) = 0;
+
+            # WiFi loss > 10s (5 counts @ 2s) OR HA API loss > 30s (15 counts @ 2s) triggers error state
+            - if:
+                condition:
+                  lambda: return (id(wifi_error_count) >= 5 || id(api_error_count) >= 15);
+                then:
+                  - if:
+                      condition:
+                        lambda: return id(led_state) != "connection_error";
+                      then:
+                        - logger.log:
+                            level: WARN
+                            format: "Connection error! WiFi: %s (Error-Count %d), API: %s (Error-Count %d)"
+                            args:
+                              [
+                                'id(wifi_id).is_connected() ? "Connected" : "Disconnected"',
+                                "id(wifi_error_count)",
+                                'id(api_id).is_connected() ? "Connected" : "Disconnected"',
+                                "id(api_error_count)",
+                              ]
+                        - if:
+                            condition:
+                              lambda: return id(show_connection_error_led_switch).state;
+                            then:
+                              - lambda: id(led_state) = "connection_error";
+                              - script.execute: controle_leds
+                else:
+                  - if:
+                      condition:
+                        lambda: return id(led_state) == "connection_error";
+                      then:
+                        - logger.log: "Connection recovered! Resetting LED state to idle."
+                        - lambda: id(led_state) = "idle";
+                        - script.execute: controle_leds
 
 i2s_audio:
   - id: i2s_speaker
@@ -263,7 +327,10 @@ media_player:
             if(abs(new_volume-old_volume) > 0.0001) {
               if(old_volume != -1) {
                 if(!id(alarm_siren).state) {
-                  id(show_volume)->execute();
+                  bool is_button = id(volume_down).state || id(volume_up).state;
+                  if (is_button || id(show_remote_volume_led_switch).state) {
+                    id(show_volume)->execute();
+                  }
                 }
               }
             }
@@ -619,6 +686,16 @@ script:
           then:
             - if:
                 condition:
+                  lambda: return id(improv_ble_in_progress);
+                then:
+                  - light.turn_on:
+                      id: top_led
+                      red: 100%
+                      green: 89%
+                      blue: 71%
+                      effect: pulse
+            - if:
+                condition:
                   lambda: return id(led_state) == "idle";
                 then:
                   - if:
@@ -776,3 +853,19 @@ switch:
           volume: !lambda return id(old_volume_level);
       - lambda: id(led_state) = "idle";
       - script.execute: controle_leds
+
+  - platform: template
+    id: show_remote_volume_led_switch
+    name: "LED bei Remote-Lautstaerke"
+    icon: "mdi:volume-vibrate"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  - platform: template
+    id: show_connection_error_led_switch
+    name: "Blinken bei Verbindungsfehler"
+    icon: "mdi:wifi-alert"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
