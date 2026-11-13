@@ -16,15 +16,18 @@ substitutions:
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
 
 external_components:
-  - source: github://n-IA-hane/esphome-intercom@main
-    components: [esp_audio_stack, esp_aec, audio_processor, intercom_api]
+  - source: github://n-IA-hane/esphome-intercom@v2026.7.1
+    components: [speaker, voice_assistant]
+    refresh: 0s
+  - source: github://n-IA-hane/esphome-audio-stack@v2026.7.0
+    components: [esp_audio_stack, esp_aec]
     refresh: 0s
 
 esphome:
   name: "${name}"
   friendly_name: "${friendly_name}"
   comment: "${device_description}"
-  min_version: 2026.5.0
+  min_version: 2026.7.0
   name_add_mac_suffix: true
   project:
     name: rmeissn.onju-voice-esphome
@@ -73,31 +76,31 @@ esp32:
     type: esp-idf
     version: recommended
     sdkconfig_options:
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
-      CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y"
+      #CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      #CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      #CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y"
 
       # Moves instructions and read only data from flash into PSRAM on boot.
       # Both enabled allows instructions to execute while a flash operation is in progress without needing to be placed in IRAM.
       # Considerably speeds up mWW at the cost of using more PSRAM.
-      CONFIG_SPIRAM_RODATA: "y"
-      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      #CONFIG_SPIRAM_RODATA: "y"
+      #CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
 
-      CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
-      CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
+      #CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
+      #CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
 
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
       #CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y" # TLS1.3 support isn't enabled by default in IDF 5.1.5
-      CONFIG_MBEDTLS_DYNAMIC_BUFFER: "y"
-      CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN: "16384"
+      #CONFIG_MBEDTLS_DYNAMIC_BUFFER: "y"
+      #CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN: "16384"
       # Keep AES in hardware for HTTPS media/TTS worst-case testing. The AFE
       # bridge buffers below live in PSRAM to preserve contiguous DMA heap.
-      CONFIG_MBEDTLS_HARDWARE_AES: "y"
+      #CONFIG_MBEDTLS_HARDWARE_AES: "y"
 
 psram:
   mode: octal
   speed: 80MHz
-  ignore_not_found: false  # The VPE has PSRAM, so this is safe. Allows configuring WiFi driver to use more resources (done automatically by the speaker media player)
+  ignore_not_found: false # The VPE has PSRAM, so this is safe. Allows configuring WiFi driver to use more resources (done automatically by the speaker media player)
 
 # Enable logging
 logger:
@@ -141,14 +144,13 @@ globals:
   - id: old_volume_level
     type: float
     restore_value: no
-    initial_value: '0.5'
+    initial_value: "0.5"
   - id: connection_error_count
     type: int
     restore_value: no
-    initial_value: '0'
+    initial_value: "0"
 
 interval:
-
   - interval: 2s
     then:
       - if:
@@ -192,12 +194,16 @@ micro_wake_word: # requires 16khz input currently
         condition:
           - switch.is_on: use_wake_word # ignore detection if switch is off
         then:
-          - media_player.speaker.play_on_device_media_file: 
+          - media_player.speaker.play_on_device_media_file:
               media_file: wakeup
               announcement: true
           - wait_until:
               speaker.is_playing:
                 id: onju_out
+          - wait_until:
+              not:
+                speaker.is_playing:
+                  id: onju_out
           - voice_assistant.start:
               wake_word: !lambda return wake_word;
 
@@ -269,15 +275,16 @@ esp_audio_stack:
   # aec_reference: previous_frame
   slot_bit_width: 32 # SPH0645 needs 32-bit I2S frames
   correct_dc_offset: true # removes DC bias from SPH0645 MEMS mics
-  mic_channel: right # which stereo slot carries the mic
+  # mic_channel: right # which stereo slot carries the mic
   # num_channels: 2 # stereo capture — see note below about SNR
   # NOTE stereo destroys signal-noise-ratio (SNR) down to 1-2db. Use right or left to get a better SNR of ~16db (in my tests), TODO: retest with this new dupex implementation
+  aec_reference: previous_frame
   buffers_in_psram: true # Required for sr_low_cost (512-sample frames)
-  
+
 esp_aec:
   id: aec_processor
   sample_rate: 16000 # AEC is always at 16kHz (= output_sample_rate)
-  mode: sr_low_cost
+  mode: fd_high_perf
   filter_length: 4 # 64ms tail — sufficient for integrated codec path
 
 speaker:
@@ -286,6 +293,7 @@ speaker:
     id: onju_out
     esp_audio_stack_id: i2s_shared
     sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
+    bits_per_sample: 16
 
   # Virtual speakers to combine the announcement and media streams together into one output
   - platform: mixer
@@ -342,12 +350,12 @@ media_player:
     # task_stack_in_psram: true
     announcement_pipeline:
       speaker: announcement_spk_resampling_input
-      format: FLAC     # FLAC is the least processor intensive codec
+      format: FLAC # FLAC is the least processor intensive codec
       num_channels: 1
       sample_rate: 48000
     media_pipeline:
       speaker: media_spk_resampling_input
-      format: FLAC     # FLAC is the least processor intensive codec
+      format: FLAC # FLAC is the least processor intensive codec
       num_channels: 1
       sample_rate: 48000
     files:
@@ -401,12 +409,11 @@ media_player:
                   and:
                     - not:
                         script.is_running: show_volume
-                    - not:
-                        voice_assistant.is_running
+                    - not: voice_assistant.is_running
                 then:
                   - lambda: id(led_state) = "idle";
                   - script.execute: controle_leds
-      - micro_wake_word.start
+      # - micro_wake_word.start
     on_idle: # also called after announcement finished, is triggered on volume change
       - logger.log: "On IDLE"
       - if:
@@ -423,12 +430,11 @@ media_player:
                   and:
                     - not:
                         script.is_running: show_volume
-                    - not:
-                        voice_assistant.is_running
+                    - not: voice_assistant.is_running
                 then:
                   - lambda: id(led_state) = "idle";
                   - script.execute: controle_leds
-      - micro_wake_word.start
+      # - micro_wake_word.start
 
 voice_assistant: # need to use a 16khz due to mww
   id: va
@@ -446,8 +452,8 @@ voice_assistant: # need to use a 16khz due to mww
   on_start:
     - mixer_speaker.apply_ducking: # useful if music is started in the background
         id: media_spk_mixer_input
-        decibel_reduction: 30  # Number of dB quieter; higher implies more quiet, 0 implies full volume
-        duration: 0.0s         # The duration of the transition (default is no transition) -> duck now
+        decibel_reduction: 30 # Number of dB quieter; higher implies more quiet, 0 implies full volume
+        duration: 0.0s # The duration of the transition (default is no transition) -> duck now
   on_listening:
     - lambda: id(led_state) = "listening";
     - script.execute: controle_leds
@@ -602,123 +608,121 @@ binary_sensor:
     pin: GPIO3
     threshold: 2000 # 1000 to 3000 should be a good value (lower = more sensitive)
     on_multi_click:
-    - timing: # single click
-      - ON for at most 1s
-      - OFF for at least 0.5s
-      then:
-        - if:
-            condition:
-              switch.is_on: timer_ringing
-            then:
-              - switch.turn_off: timer_ringing
-            else:
-              - if:
-                  condition: 
-                    media_player.is_announcing:
-                      id: nabu
-                  then:
-                    - media_player.stop:
+      - timing: # single click
+          - ON for at most 1s
+          - OFF for at least 0.5s
+        then:
+          - if:
+              condition:
+                switch.is_on: timer_ringing
+              then:
+                - switch.turn_off: timer_ringing
+              else:
+                - if:
+                    condition:
+                      media_player.is_announcing:
                         id: nabu
-                        announcement: true
-                  else:
-                    - if:
-                        condition: 
-                          voice_assistant.is_running
-                        then:
-                          - voice_assistant.stop
-                        else:
-                          - if: # switch between pause/play
-                              condition:
-                                or:
-                                  - media_player.is_playing:
+                    then:
+                      - media_player.stop:
+                          id: nabu
+                          announcement: true
+                    else:
+                      - if:
+                          condition: voice_assistant.is_running
+                          then:
+                            - voice_assistant.stop
+                          else:
+                            - if: # switch between pause/play
+                                condition:
+                                  or:
+                                    - media_player.is_playing:
+                                        id: nabu
+                                    - media_player.is_paused:
+                                        id: nabu
+                                then:
+                                  - media_player.toggle:
                                       id: nabu
-                                  - media_player.is_paused:
-                                      id: nabu
-                              then:
-                                - media_player.toggle:
-                                    id: nabu
-                              else:
-                                - if: # if not paused/playing, activate va
-                                    condition:
-                                      and:
-                                        - not:
-                                            voice_assistant.is_running
-                                        - lambda: return id(booted);
-                                        - not:
-                                            switch.is_on: master_mute_switch
-                                    then:
-                                      - media_player.speaker.play_on_device_media_file:
-                                          media_file: wakeup
-                                          announcement: true
-                                      - wait_until:
-                                          speaker.is_playing:
-                                            id: onju_out
-                                      #- wait_until:
-                                      #    not:
-                                      #      speaker.is_playing:
-                                      #        id: onju_out
-                                      - delay: 50ms
-                                      - voice_assistant.start
-    - timing: # double click
-      - ON for at most 0.5s
-      - OFF for at most 0.5s
-      - ON for at most 0.5s
-      - OFF for at least 0.25s
-      then:
-        - event.trigger:
-            id: button_press_event
-            event_type: "double_press"
-    - timing: # triple click
-      - ON for at most 0.5s
-      - OFF for at most 0.5s
-      - ON for at most 0.5s
-      - OFF for at most 0.5s
-      - ON for at most 0.5s
-      - OFF for at least 0.25s
-      then:
-        - event.trigger:
-            id: button_press_event
-            event_type: "triple_press"
-    - timing: # long press, reset everything
-      - ON for 1s to 3s
-      - OFF for at least 0.25s
-      then:
-        - logger.log: "Long Press - Resetting components"
-        - light.turn_on:
-            id: top_led
-            red: 100%
-            green: 0%
-            blue: 0%
-            brightness: 100%
-            effect: pulse
-        - voice_assistant.stop
-        - micro_wake_word.stop
-        - media_player.stop:
-            id: nabu
-        #- microphone.stop_capture
-        - mixer_speaker.apply_ducking:
-            id: media_spk_mixer_input
-            decibel_reduction: 0
-            duration: 0.0s
-        - delay: 500ms
-        - wait_until:
-            not:
-              speaker.is_playing:
-                id: onju_out
-        - lambda: id(led_state) = "idle";
-        - script.execute: controle_leds
-        - delay: 100ms
-        - if:
-            condition:
-              and:
-                - switch.is_on: use_wake_word
-                - switch.is_off: master_mute_switch
-            then:
-              - micro_wake_word.start
-        - event.trigger:
-            id: button_press_event
-            event_type: "long_press"
-  
+                                else:
+                                  - if: # if not paused/playing, activate va
+                                      condition:
+                                        and:
+                                          - not: voice_assistant.is_running
+                                          - lambda: return id(booted);
+                                          - not:
+                                              switch.is_on: master_mute_switch
+                                      then:
+                                        - media_player.speaker.play_on_device_media_file:
+                                            media_file: wakeup
+                                            announcement: true
+                                        - wait_until:
+                                            speaker.is_playing:
+                                              id: onju_out
+                                        #- wait_until:
+                                        #    not:
+                                        #      speaker.is_playing:
+                                        #        id: onju_out
+                                        - delay: 50ms
+                                        - voice_assistant.start
+      - timing: # double click
+          - ON for at most 0.5s
+          - OFF for at most 0.5s
+          - ON for at most 0.5s
+          - OFF for at least 0.25s
+        then:
+          - event.trigger:
+              id: button_press_event
+              event_type: "double_press"
+      - timing: # triple click
+          - ON for at most 0.5s
+          - OFF for at most 0.5s
+          - ON for at most 0.5s
+          - OFF for at most 0.5s
+          - ON for at most 0.5s
+          - OFF for at least 0.25s
+        then:
+          - event.trigger:
+              id: button_press_event
+              event_type: "triple_press"
+      - timing: # long press, reset everything
+          - ON for 1s to 3s
+          - OFF for at least 0.25s
+        then:
+          - logger.log: "Long Press - Resetting components"
+          - light.turn_on:
+              id: top_led
+              red: 100%
+              green: 0%
+              blue: 0%
+              brightness: 100%
+              effect: pulse
+          - voice_assistant.stop
+          - micro_wake_word.stop
+          - media_player.stop:
+              id: nabu
+          #- microphone.stop_capture
+          - mixer_speaker.apply_ducking:
+              id: media_spk_mixer_input
+              decibel_reduction: 0
+              duration: 0.0s
+          - delay: 500ms
+          - wait_until:
+              not:
+                speaker.is_playing:
+                  id: onju_out
+          - lambda: id(led_state) = "idle";
+          - script.execute: controle_leds
+          - delay: 100ms
+          - if:
+              condition:
+                and:
+                  - switch.is_on: use_wake_word
+                  - switch.is_off: master_mute_switch
+              then:
+                - micro_wake_word.start
+          - event.trigger:
+              id: button_press_event
+              event_type: "long_press"
+
   - platform: gpio
     id: hardware_mute_switch
     internal: true
@@ -902,76 +906,76 @@ script:
           then:
             - if:
                 condition:
-                   lambda: return id(led_state) == "idle";
+                  lambda: return id(led_state) == "idle";
                 then:
-                   - script.execute: check_if_timers_active
-                   - if:
-                        condition:
-                          switch.is_on: master_mute_switch
-                        then:
-                          - light.turn_on:
-                              id: top_led
-                              red: 100%
-                              green: 0%
-                              blue: 5%
-                              brightness: 30%
-                              effect: "none"
-                        else:
-                          - if:
-                              condition:
-                                switch.is_off: use_wake_word
-                              then:
-                                - light.turn_on:
-                                    id: top_led
-                                    red: 40%
-                                    green: 0%
-                                    blue: 40%
-                                    brightness: 30%
-                                    effect: "none"
-                              else:
-                                - if:
-                                    condition:
-                                      and:
-                                        - switch.is_on: flicker_wake_word
-                                        - lambda: return id(internal_flicker);
-                                    then:
-                                      - if:
-                                          condition:
-                                            lambda: return id(is_timer_active);
-                                          then:
-                                            - light.turn_on:
-                                                id: top_led
-                                                blue: 100%
-                                                red: 100%
-                                                green: 0%
-                                                brightness: 30%
-                                                effect: listening_ww
-                                          else:
-                                            - light.turn_on:
-                                                id: top_led
-                                                blue: 100%
-                                                red: 0%
-                                                green: 100%
-                                                brightness: 60%
-                                                effect: listening_ww
-                                    else:
-                                      - light.turn_off: top_led
+                  - script.execute: check_if_timers_active
+                  - if:
+                      condition:
+                        switch.is_on: master_mute_switch
+                      then:
+                        - light.turn_on:
+                            id: top_led
+                            red: 100%
+                            green: 0%
+                            blue: 5%
+                            brightness: 30%
+                            effect: "none"
+                      else:
+                        - if:
+                            condition:
+                              switch.is_off: use_wake_word
+                            then:
+                              - light.turn_on:
+                                  id: top_led
+                                  red: 40%
+                                  green: 0%
+                                  blue: 40%
+                                  brightness: 30%
+                                  effect: "none"
+                            else:
+                              - if:
+                                  condition:
+                                    and:
+                                      - switch.is_on: flicker_wake_word
+                                      - lambda: return id(internal_flicker);
+                                  then:
+                                    - if:
+                                        condition:
+                                          lambda: return id(is_timer_active);
+                                        then:
+                                          - light.turn_on:
+                                              id: top_led
+                                              blue: 100%
+                                              red: 100%
+                                              green: 0%
+                                              brightness: 30%
+                                              effect: listening_ww
+                                        else:
+                                          - light.turn_on:
+                                              id: top_led
+                                              blue: 100%
+                                              red: 0%
+                                              green: 100%
+                                              brightness: 60%
+                                              effect: listening_ww
+                                  else:
+                                    - light.turn_off: top_led
             - if:
                 condition:
                   lambda: return id(led_state) == "listening";
                 then:
-                   - light.turn_on:
-                       id: top_led
-                       blue: 100%
-                       red: 0%
-                       green: 100%
-                       brightness: 100%
-                       effect: listening
+                  - light.turn_on:
+                      id: top_led
+                      blue: 100%
+                      red: 0%
+                      green: 100%
+                      brightness: 100%
+                      effect: listening
             - if:
                 condition:
                   lambda: return id(led_state) == "thinking";
                 then:
-                   - light.turn_on:
+                  - light.turn_on:
                       id: top_led
                       blue: 100%
                       red: 100%
@@ -982,7 +986,7 @@ script:
                 condition:
                   lambda: return id(led_state) == "replying";
                 then:
-                   - light.turn_on:
+                  - light.turn_on:
                       id: top_led
                       blue: 100%
                       red: 60%
@@ -992,7 +996,7 @@ script:
                 condition:
                   lambda: return id(led_state) == "error";
                 then:
-                   - light.turn_on:
+                  - light.turn_on:
                       id: top_led
                       blue: 0%
                       red: 100%
@@ -1000,31 +1004,31 @@ script:
                       effect: none
             - if:
                 condition:
-                   lambda: return id(led_state) == "timer_ringing";
+                  lambda: return id(led_state) == "timer_ringing";
                 then:
-                   - light.turn_on:
-                       id: top_led
-                       blue: 0%
-                       red: 100%
-                       green: 100%
-                       effect: timer_pulse
+                  - light.turn_on:
+                      id: top_led
+                      blue: 0%
+                      red: 100%
+                      green: 100%
+                      effect: timer_pulse
             - if:
                 condition:
-                   lambda: return id(led_state) == "connection_error";
+                  lambda: return id(led_state) == "connection_error";
                 then:
-                   - light.turn_on:
-                       id: top_led
-                       red: 100%
-                       green: 0%
-                       blue: 0%
-                       effect: pulse
+                  - light.turn_on:
+                      id: top_led
+                      red: 100%
+                      green: 0%
+                      blue: 0%
+                      effect: pulse
             - if:
                 condition:
-                   lambda: return id(led_state) == "alarm";
+                  lambda: return id(led_state) == "alarm";
                 then:
-                   - light.turn_on:
-                       id: top_led
-                       effect: alarm_strobe
+                  - light.turn_on:
+                      id: top_led
+                      effect: alarm_strobe
 
   - id: set_volume
     mode: restart
@@ -1034,7 +1038,7 @@ script:
       - media_player.volume_set:
           id: nabu
           volume: !lambda return clamp(id(nabu).volume+volume, 0.0f, 1.0f);
-  
+
   - id: show_volume
     mode: restart
     then:
@@ -1103,7 +1107,7 @@ script:
           condition:
             - switch.is_on: timer_ringing
           then:
-            - media_player.speaker.play_on_device_media_file: 
+            - media_player.speaker.play_on_device_media_file:
                 media_file: timer_finished
                 announcement: true
             - wait_until:
