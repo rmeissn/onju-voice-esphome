@@ -65,9 +65,11 @@ You can use any speech-to-text (STT) engine, conversation agent and text-to-spee
 
 My current setup, tuned for speedy responses, is:
 
-- STT: Mistral Voxtral via [Whisper STT Cloud API Integation](https://github.com/fabio-garavini/ha-openai-whisper-stt-api) - excels other models for European languages (other than English), is good for bad signal-noise-ratios and usually responds in less than 500ms
-- Conversation Agent: gpt-oss-120b through openrouter (pinned to Groq Cloud or Cerebras - lowest latency and highest througput) via a [Streaming capable Integration](https://github.com/skye-harris/hass_local_openai_llm). The model seems capable in calling the right functions/tools and is much cheaper than e.g. OpenAI. Switching to Groq.cloud directly might improve response speeds even more.
-- TTS: Elevenlabs - quite fast, offers a free tier, adjustable speaking speed (really a pro!), but got problems with pronunciation of dates and numbers as numerics (at least in German)
+- STT: Mistral Voxtral via [Whisper STT Cloud API Integration](https://github.com/fabio-garavini/ha-openai-whisper-stt-api) - excels other models for European languages (other than English), is good for bad signal-noise-ratios and usually responds in less than 500ms
+- Conversation Agent: Gemini 3.5 Flash Lite through OpenRouter via the streaming capable [Local OpenAI LLM Integration](https://github.com/skye-harris/hass_local_openai_llm).
+  - Alternative: gpt-oss-120b is a usable model as well - fast and cheap, especially when pinned to providers like Groq Cloud or Cerebras (lowest latency and highest throughput). It seems capable in calling the right functions/tools.
+- TTS: ElevenLabs Turbo v4 through OpenRouter via the [OpenAI TTS Integration](https://github.com/sfortis/openai_tts) - quite fast, adjustable speaking speed (really a pro!)
+  - Alternative: the official [ElevenLabs Integration](https://www.home-assistant.io/integrations/elevenlabs/) works well, too, and ElevenLabs offers a free tier that is often sufficient.
 
 This whole setup is the fastest combination I've found so far (action & response speed), while not setting things up locally.
 
