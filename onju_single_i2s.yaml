@@ -19,14 +19,11 @@ esphome:
   name: "${name}"
   friendly_name: "${friendly_name}"
   comment: "${device_description}"
-  min_version: 2026.2.0
+  min_version: 2026.10.0
   name_add_mac_suffix: true
   project:
     name: rmeissn.onju-voice-esphome
     version: "${project_version}"
-  platformio_options:
-    board_build.flash_mode: dio
-    board_build.arduino.memory_type: qio_opi
   on_boot:
     then:
       - light.turn_on:
@@ -35,9 +32,10 @@ esphome:
           red: 0%
           green: 0%
           blue: 100%
-      - wait_until:
+      - wait_until: # timeout: continue booting without WiFi, so the connection error check (needs booted) can run
           condition:
             wifi.connected:
+          timeout: 20s
       - light.turn_on:
           id: top_led
           effect: booting
@@ -47,6 +45,7 @@ esphome:
       - wait_until:
           condition:
             api.connected:
+          timeout: 20s
       - light.turn_on:
           id: top_led
           effect: pulse
@@ -67,6 +66,8 @@ esp32:
   framework:
     type: esp-idf
     version: recommended
+    advanced:
+      compiler_optimization: PERF
     sdkconfig_options:
       CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
       CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
@@ -77,6 +78,7 @@ esp32:
       # Considerably speeds up mWW at the cost of using more PSRAM.
       CONFIG_SPIRAM_RODATA: "y"
       CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "4096" # allocations <= 4KB stay in internal RAM, larger ones may go to PSRAM
 
       CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
       CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
@@ -84,10 +86,12 @@ esp32:
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
       CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y" # TLS1.3 support isn't enabled by default in IDF 5.1.5
 
+      CONFIG_ESP_WIFI_EXTRA_IRAM_OPT: "y"
+
 psram:
   mode: octal
   speed: 80MHz
-  ignore_not_found: false # The VPE has PSRAM, so this is safe. Allows configuring WiFi driver to use more resources (done automatically by the speaker media player)
+  ignore_not_found: false # The Onju has PSRAM (8MB octal), so this is safe. Allows configuring WiFi driver to use more resources (done automatically by the speaker media player)
 
 # Enable logging
 logger:
@@ -106,11 +110,11 @@ network:
   enable_ipv6: true
 
 api:
-  services:
-    - service: start_va
+  actions:
+    - action: start_va
       then:
         - voice_assistant.start
-    - service: stop_va
+    - action: stop_va
       then:
         - voice_assistant.stop
 
@@ -366,9 +370,11 @@ media_player:
                   - lambda: id(led_state) = "idle";
                   - script.execute: controle_leds
       - wait_until:
-          not:
-            speaker.is_playing:
-              id: onju_out
+          condition:
+            not:
+              speaker.is_playing:
+                id: onju_out
+          timeout: 3s
       # - if:
       #     condition:
       #       not:
@@ -442,9 +448,10 @@ voice_assistant: # need to use a 16khz due to mww
           - media_player.is_announcing:
         timeout: 0.5s
     - wait_until:
-        - and:
-            - not:
-                media_player.is_announcing:
+        condition:
+          not:
+            media_player.is_announcing:
+        timeout: 60s # long TTS answers
     - mixer_speaker.apply_ducking: # Stop ducking audio
         id: media_spk_mixer_input
         decibel_reduction: 0
@@ -677,9 +684,11 @@ binary_sensor:
               duration: 0.0s
           - delay: 500ms
           - wait_until:
-              not:
-                speaker.is_playing:
-                  id: onju_out
+              condition:
+                not:
+                  speaker.is_playing:
+                    id: onju_out
+              timeout: 3s
           - lambda: id(led_state) = "idle";
           - script.execute: controle_leds
           - delay: 100ms
@@ -711,12 +720,16 @@ binary_sensor:
                 media_file: mute
                 announcement: true
             - wait_until:
-                speaker.is_playing:
-                  id: announcement_spk_resampling_input
-            - wait_until:
-                not:
+                condition:
                   speaker.is_playing:
                     id: announcement_spk_resampling_input
+                timeout: 2s
+            - wait_until:
+                condition:
+                  not:
+                    speaker.is_playing:
+                      id: announcement_spk_resampling_input
+                timeout: 3s
             - script.execute: turn_off_wake_word
       - script.execute: turn_off_wake_word
     on_release:
@@ -724,12 +737,16 @@ binary_sensor:
           media_file: unmute
           announcement: true
       - wait_until:
-          speaker.is_playing:
-            id: announcement_spk_resampling_input
-      - wait_until:
-          not:
+          condition:
             speaker.is_playing:
               id: announcement_spk_resampling_input
+          timeout: 2s
+      - wait_until:
+          condition:
+            not:
+              speaker.is_playing:
+                id: announcement_spk_resampling_input
+          timeout: 3s
       - delay: 100ms
       - switch.turn_off: master_mute_switch
       - script.execute: turn_on_wake_word
@@ -770,7 +787,7 @@ light:
     pin: GPIO11
     chipset: SK6812
     num_leds: 6
-    rgb_order: grb
+    channel_colors: GRB # replaces the deprecated rgb_order (removed in 2027.3.0)
     default_transition_length: 0s
     gamma_correct: 2.8
   - platform: partition
@@ -1035,6 +1052,7 @@ script:
               - switch.is_off: master_mute_switch
               - switch.is_on: use_wake_word
           then:
+            # NOTE speaker.stop is required here: speaker and mic share one i2s bus, the mic can only start once the speaker released it
             - if:
                 condition:
                   speaker.is_playing:
@@ -1081,12 +1099,16 @@ script:
                 media_file: timer_finished
                 announcement: true
             - wait_until:
-                speaker.is_playing:
-                  id: announcement_spk_resampling_input
-            - wait_until:
-                not:
+                condition:
                   speaker.is_playing:
                     id: announcement_spk_resampling_input
+                timeout: 2s
+            - wait_until:
+                condition:
+                  not:
+                    speaker.is_playing:
+                      id: announcement_spk_resampling_input
+                timeout: 10s
             - delay: 500ms
 
   - id: play_alarm_loop
@@ -1099,12 +1121,16 @@ script:
                 id: nabu
                 media_url: "${alarm_sound_url}"
             - wait_until:
-                media_player.is_playing:
-                  id: nabu
-            - wait_until:
-                not:
+                condition:
                   media_player.is_playing:
                     id: nabu
+                timeout: 5s # HTTP stream start
+            - wait_until:
+                condition:
+                  not:
+                    media_player.is_playing:
+                      id: nabu
+                timeout: 60s
             - delay: 250ms
 
   - id: check_if_timers_active
@@ -1222,6 +1248,9 @@ switch:
       - lambda: id(led_state) = "timer_ringing";
       - script.execute: controle_leds
       # If 15 minutes have passed and the timer is still ringing, stop it.
+      # TODO known issue: re-triggering does not cancel a pending delay (each turn_on runs in parallel). If a second timer
+      # rings within 15min after the first one, the first run's delay turns the second one off early.
+      # Fix: move delay + turn_off into a script with mode: restart, execute it here and stop it in on_turn_off.
       - delay: 15min
       - switch.turn_off: timer_ringing
       - lambda: id(led_state) = "idle";
@@ -1233,7 +1262,7 @@ switch:
     icon: mdi:alarm-light
     entity_category: ""
     optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: ALWAYS_OFF # never restart the siren after a reboot/power loss
     on_turn_on:
       # Save volume
       - lambda: id(old_volume_level) = id(nabu).volume;
@@ -1244,6 +1273,8 @@ switch:
       - lambda: id(led_state) = "alarm";
       - script.execute: controle_leds
       # Timeout 5 minutes
+      # TODO known issue: same as timer_ringing - a pending delay from an earlier turn_on can switch a new alarm off early.
+      # Fix: move delay + turn_off into a script with mode: restart.
       - delay: 5min
       - switch.turn_off: alarm_siren
     on_turn_off:

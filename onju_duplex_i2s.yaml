@@ -3,7 +3,7 @@
 substitutions:
   name: "onju-voice"
   friendly_name: "Onju Voice Common Code"
-  project_version: "1.2.0"
+  project_version: "1.3.0"
   device_description: "Common code for the onju voice, to be included in all onju voice devices"
   wakeup_sound_url: "http://192.168.0.202:8123/local/wakeup.flac" # New Notification #7 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/736267/
   error_sound_url: "http://192.168.0.202:8123/local/error.flac" # Error #8 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734442/
@@ -16,10 +16,9 @@ substitutions:
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
 
 external_components:
-  - source: github://n-IA-hane/esphome-intercom@v2026.7.1
-    components: [speaker, voice_assistant]
-    refresh: 0s
-  - source: github://n-IA-hane/esphome-audio-stack@v2026.7.0
+  # Audio Stack 2026.11.0 requires ESPHome >= 2026.10.0 and uses ESPHome's own speaker, mixer, resampler,
+  # media_player, voice_assistant and micro_wake_word (no overrides needed).
+  - source: github://n-IA-hane/esphome-audio-stack@v2026.11.0
     components: [esp_audio_stack, esp_aec]
     refresh: 0s
 
@@ -27,14 +26,11 @@ esphome:
   name: "${name}"
   friendly_name: "${friendly_name}"
   comment: "${device_description}"
-  min_version: 2026.7.0
+  min_version: 2026.10.0
   name_add_mac_suffix: true
   project:
     name: rmeissn.onju-voice-esphome
     version: "${project_version}"
-  platformio_options:
-    board_build.flash_mode: dio
-    board_build.arduino.memory_type: qio_opi
   on_boot:
     then:
       - light.turn_on:
@@ -43,9 +39,10 @@ esphome:
           red: 0%
           green: 0%
           blue: 100%
-      - wait_until:
+      - wait_until: # timeout: continue booting without WiFi, so the connection error check (needs booted) can run
           condition:
             wifi.connected:
+          timeout: 20s
       - light.turn_on:
           id: top_led
           effect: booting
@@ -55,6 +52,7 @@ esphome:
       - wait_until:
           condition:
             api.connected:
+          timeout: 20s
       - light.turn_on:
           id: top_led
           effect: pulse
@@ -75,32 +73,30 @@ esp32:
   framework:
     type: esp-idf
     version: recommended
+    advanced:
+      compiler_optimization: PERF
     sdkconfig_options:
-      #CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      #CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
-      #CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y"
+      # ESP32-S3 profile recommended by esphome-audio-stack (docs: "PSRAM and sdkconfig Requirements")
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y" # not in the audio stack list, but used by the Voice PE with the same cache setup
 
       # Moves instructions and read only data from flash into PSRAM on boot.
       # Both enabled allows instructions to execute while a flash operation is in progress without needing to be placed in IRAM.
       # Considerably speeds up mWW at the cost of using more PSRAM.
-      #CONFIG_SPIRAM_RODATA: "y"
-      #CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
-
-      #CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
-      #CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "4096" # allocations <= 4KB stay in internal RAM, larger ones may go to PSRAM
 
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
-      #CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y" # TLS1.3 support isn't enabled by default in IDF 5.1.5
-      #CONFIG_MBEDTLS_DYNAMIC_BUFFER: "y"
-      #CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN: "16384"
-      # Keep AES in hardware for HTTPS media/TTS worst-case testing. The AFE
-      # bridge buffers below live in PSRAM to preserve contiguous DMA heap.
-      #CONFIG_MBEDTLS_HARDWARE_AES: "y"
+      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y" # TLS1.3 support isn't enabled by default in IDF 5.1.5
+
+      CONFIG_ESP_WIFI_EXTRA_IRAM_OPT: "y"
 
 psram:
   mode: octal
   speed: 80MHz
-  ignore_not_found: false # The VPE has PSRAM, so this is safe. Allows configuring WiFi driver to use more resources (done automatically by the speaker media player)
+  ignore_not_found: false # The Onju has PSRAM (8MB octal), so this is safe. Allows configuring WiFi driver to use more resources (done automatically by the speaker media player)
 
 # Enable logging
 logger:
@@ -111,6 +107,7 @@ logger:
   #  sensor: WARN
 
 wifi:
+  id: wifi_id
   ssid: to_be_overwritten
 
 captive_portal:
@@ -119,11 +116,12 @@ network:
   enable_ipv6: true
 
 api:
-  services:
-    - service: start_va
+  id: api_id
+  actions:
+    - action: start_va
       then:
         - voice_assistant.start
-    - service: stop_va
+    - action: stop_va
       then:
         - voice_assistant.stop
 
@@ -145,39 +143,75 @@ globals:
     type: float
     restore_value: no
     initial_value: "0.5"
-  - id: connection_error_count
+  - id: wifi_error_count
+    type: int
+    restore_value: no
+    initial_value: "0"
+  - id: api_error_count
     type: int
     restore_value: no
     initial_value: "0"
 
+# Connection check (same as onju_media_player.yaml)
 interval:
   - interval: 2s
     then:
       - if:
           condition:
-            and:
-              - lambda: return id(booted);
-              - or:
-                  - not:
-                      wifi.connected:
-                  - not:
-                      api.connected:
+            lambda: return id(booted);
           then:
-            - lambda: id(connection_error_count) += 1;
+            # Check WiFi status
             - if:
                 condition:
-                  lambda: return id(connection_error_count) >= 5 && id(led_state) != "connection_error";
+                  not:
+                    wifi.connected:
                 then:
-                  - lambda: id(led_state) = "connection_error";
-                  - script.execute: controle_leds
-          else:
-            - lambda: id(connection_error_count) = 0;
+                  - lambda: id(wifi_error_count) += 1;
+                else:
+                  - lambda: id(wifi_error_count) = 0;
+            # Check HA API status
             - if:
                 condition:
-                  lambda: return id(led_state) == "connection_error";
+                  not:
+                    api.connected:
                 then:
-                  - lambda: id(led_state) = "idle";
-                  - script.execute: controle_leds
+                  - lambda: id(api_error_count) += 1;
+                else:
+                  - lambda: id(api_error_count) = 0;
+
+            # WiFi loss > 10s (5 counts @ 2s) OR HA API loss > 30s (15 counts @ 2s) triggers error state
+            - if:
+                condition:
+                  lambda: return (id(wifi_error_count) >= 5 || id(api_error_count) >= 15);
+                then:
+                  - if:
+                      condition:
+                        lambda: return id(led_state) != "connection_error";
+                      then:
+                        - logger.log:
+                            level: WARN
+                            format: "Connection error! WiFi: %s (Error-Count %d), API: %s (Error-Count %d)"
+                            args:
+                              [
+                                'id(wifi_id).is_connected() ? "Connected" : "Disconnected"',
+                                "id(wifi_error_count)",
+                                'id(api_id).is_connected() ? "Connected" : "Disconnected"',
+                                "id(api_error_count)",
+                              ]
+                        - if:
+                            condition:
+                              lambda: return id(show_connection_error_led_switch).state;
+                            then:
+                              - lambda: id(led_state) = "connection_error";
+                              - script.execute: controle_leds
+                else:
+                  - if:
+                      condition:
+                        lambda: return id(led_state) == "connection_error";
+                      then:
+                        - logger.log: "Connection recovered! Resetting LED state to idle."
+                        - lambda: id(led_state) = "idle";
+                        - script.execute: controle_leds
 
 micro_wake_word: # requires 16khz input currently
   id: mww
@@ -194,33 +228,31 @@ micro_wake_word: # requires 16khz input currently
         condition:
           - switch.is_on: use_wake_word # ignore detection if switch is off
         then:
-          - media_player.speaker.play_on_device_media_file:
-              media_file: wakeup
+          - media_player.play_media:
+              id: nabu
+              media_url: "audio-file://wakeup"
               announcement: true
+          # wait for the announcement path (not the hardware speaker, which keeps playing while music runs)
           - wait_until:
-              speaker.is_playing:
-                id: onju_out
-          - wait_until:
-              not:
+              condition:
                 speaker.is_playing:
-                  id: onju_out
+                  id: announcement_spk_resampling_input
+              timeout: 2s
+          - wait_until:
+              condition:
+                not:
+                  speaker.is_playing:
+                    id: announcement_spk_resampling_input
+              timeout: 3s
           - voice_assistant.start:
               wake_word: !lambda return wake_word;
 
 number:
-  #- platform: intercom_api
-  #  intercom_api_id: intercom
-  #  speaker_volume:
-  #    id: speaker_volume
-  #    name: "Speaker Volume"
-
+  # NOTE no master_volume number: Audio Stack then keeps its master volume at 100%, so the media player volume
+  # is the only volume control (master volume and media player volume would be multiplied)
   - platform: esp_audio_stack
     esp_audio_stack_id: i2s_shared
-    master_volume:
-      id: master_volume
-      name: Master Volume
-      speaker_id: onju_out
-    mic_gain:
+    mic_gain: # NOTE since Audio Stack 2026.11.0 positive gain is a constant boost from the first sample (no level gate anymore) -> recheck saved values for clipping
       id: mic_gain
       name: Mic Gain
       min_value: -20
@@ -254,46 +286,51 @@ select:
           id(okay_nabu).set_probability_cutoff(143);    // 0.56 -> 0.751 FAPH on DipCo
         }
 
-# intercom_api:
-#   task_stacks_in_psram: true   # save ~28KB internal heap on S3 by placing task stacks in PSRAM
-#   buffers_in_psram: true # Intercom staging buffers in PSRAM; AEC/AFE buffers live in esp_audio_stack
-#   microphone: i2s_mics
-#   speaker: media_spk_resampling_input
-#   ringing_timeout: 30s
-#   delete_contact_missing_from:
-#     updates_number: 1
-
 esp_audio_stack:
   id: i2s_shared
-  i2s_lrclk_pin: GPIO13
-  i2s_bclk_pin: GPIO18
-  i2s_din_pin: GPIO17
-  i2s_dout_pin: GPIO12
-  sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
-  output_sample_rate: 16000 # Mic/AEC/MWW/VA decimated to 16kHz via FIR x3
+  i2s_lrclk_pin: GPIO13 # WS / LRCLK (shared by mics and DAC)
+  i2s_bclk_pin: GPIO18 # SCK / BCLK (shared by mics and DAC)
+  i2s_din_pin: GPIO17 # mic data
+  i2s_dout_pin: GPIO12 # SDO / Din of the DAC
+  # DAC supports 8kHz to 96kHz, but Audio Stack accepts 8kHz to 48kHz on the bus.
+  # sample_rate must be an integer multiple (max x6) of output_sample_rate -> 44.1kHz (would be enough) is not possible with a 16kHz mic
+  sample_rate: 48000
+  output_sample_rate: 16000 # Mic/AEC/MWW/VA converted from 48kHz to 16kHz (ratio 3, Espressif esp_ae_rate_cvt)
   processor_id: aec_processor
-  # aec_reference: previous_frame
+  # Onju has no hardware loopback (MEMS mics + I2S amp, no codec) -> software playback reference.
+  # ring_buffer is recommended for this setup. With 2026.7 it did not work for me, so previous_frame was used;
+  # since 2026.11 the ring is fed every TX period (incl. silence/padding/underruns) like previous_frame. Fallback: previous_frame
+  aec_reference: ring_buffer
+  aec_reference_buffer_ms: 80 # ring capacity, not a fixed delay
   slot_bit_width: 32 # SPH0645 needs 32-bit I2S frames
   correct_dc_offset: true # removes DC bias from SPH0645 MEMS mics
-  # mic_channel: right # which stereo slot carries the mic
-  # num_channels: 2 # stereo capture — see note below about SNR
-  # NOTE stereo destroys signal-noise-ratio (SNR) down to 1-2db. Use right or left to get a better SNR of ~16db (in my tests), TODO: retest with this new dupex implementation
-  aec_reference: previous_frame
-  buffers_in_psram: true # Required for sr_low_cost (512-sample frames)
+  # Both mics (left + right slot on the shared data line) averaged to mono before the AEC (new in 2026.11.0, cf. examples/05-stereo-i2s-downmix.yaml)
+  # NOTE the old stereo capture made the mics quieter and destroyed the SNR (1-2db vs. ~16db with one mic). TODO: retest with mic_mix: average
+  # If one slot turns out to be silent/noisy, averaging halves the level (-6db) -> fall back to a single mic:
+  # remove rx_mic_slots + mic_mix and set mic_channel: left (or right)
+  rx_slot_mode: stereo
+  rx_mic_slots: [left, right]
+  mic_mix: average
+  # NOTE num_channels only describes the TX (speaker) bus, it does NOT enable stereo capture.
+  buffers_in_psram: true # optional: moves non-DMA audio buffers to PSRAM, saves internal RAM (useful with Sendspin + HTTP buffers)
 
 esp_aec:
   id: aec_processor
   sample_rate: 16000 # AEC is always at 16kHz (= output_sample_rate)
-  mode: fd_high_perf
-  filter_length: 4 # 64ms tail — sufficient for integrated codec path
+  # Modes that preserve wake word features (linear speech-recognition AEC, no non-linear residual suppression):
+  #   sr_low_cost  - recommended starting point for VA + MWW
+  #   sr_high_perf - higher-cost SR/FFT variant, needs a large contiguous DMA-capable internal heap block (rejected at runtime if missing)
+  # fd_low_cost/fd_high_perf and voip_low_cost/voip_high_perf add residual echo suppression (better for calls, may hurt wake word detection)
+  mode: sr_low_cost
+  filter_length: 4 # ESP-SR echo filter length (1-8, not ms): higher tracks longer echo tails but costs more CPU/RAM
 
 speaker:
   # Hardware speaker output
   - platform: esp_audio_stack
     id: onju_out
     esp_audio_stack_id: i2s_shared
-    sample_rate: 48000 # DAC supports 8kHz to 96kHz, TODO: test 44.1kHz (would be enough)
-    bits_per_sample: 16
+    sample_rate: 48000 # DAC supports 8kHz to 96kHz; must equal esp_audio_stack.sample_rate (validated since 2026.11.0)
+    bits_per_sample: 16 # DAC supports 16/24/32 bit, but the public speaker PCM of Audio Stack is always 16 bit
 
   # Virtual speakers to combine the announcement and media streams together into one output
   - platform: mixer
@@ -306,9 +343,6 @@ speaker:
         timeout: 10s
         buffer_duration: 500ms
       - id: media_spk_mixer_input
-        timeout: 10s
-        buffer_duration: 500ms
-      - id: intercom_spk_mixer_input
         timeout: 10s
         buffer_duration: 500ms
 
@@ -327,48 +361,68 @@ speaker:
     bits_per_sample: 16
     num_channels: 1
     # task_stack_in_psram: true
-  - platform: resampler
-    id: intercom_spk_resampling_input
-    output_speaker: intercom_spk_mixer_input
-    sample_rate: 48000
-    bits_per_sample: 16
-    num_channels: 1
-    # task_stack_in_psram: true
 
 microphone:
   - platform: esp_audio_stack
     id: i2s_mics
     esp_audio_stack_id: i2s_shared
 
+# Sendspin (Music Assistant) hub, provides synchronized multi-room playback
+sendspin:
+  id: sendspin_hub
+  task_stack_in_psram: false
+
+# On-device sounds, played via media_url "audio-file://<id>"
+audio_file:
+  - id: wakeup
+    file: "${wakeup_sound_url}"
+  - id: error
+    file: "${error_sound_url}"
+  - id: mute
+    file: "${mute_sound_url}"
+  - id: unmute
+    file: "${unmute_sound_url}"
+  - id: timer_finished
+    file: "${timer_finished_sound_url}"
+
+media_source:
+  - platform: audio_file
+    id: audio_file_announcement_source
+  - platform: audio_http # TTS responses, announcements from HA
+    id: http_announcement_source
+    buffer_size: 65536 # von 250KB auf 64KB reduziert für sofortigen Durchsage-Start (same as onju_media_player.yaml)
+  - platform: audio_http # media from HA / URLs (e.g. the alarm sound)
+    id: http_media_source
+    buffer_size: 131072 # von 500KB auf 128KB reduziert für <1s Stream-Start (same as onju_media_player.yaml)
+  - platform: sendspin
+    id: sendspin_media_source
+
 media_player:
-  - platform: speaker
+  # Exposes the Sendspin group controls (Music Assistant)
+  - platform: sendspin
+    id: sendspin_group_media_player
+  - platform: speaker_source
     name: "Media Player"
     id: nabu
     volume_increment: 0.05
     volume_min: 0
     volume_max: 1
-    # task_stack_in_psram: true
     announcement_pipeline:
       speaker: announcement_spk_resampling_input
-      format: FLAC # FLAC is the least processor intensive codec
+      format: FLAC # FLAC is the least processor intensive codec (CPU is shared with AEC + MWW)
       num_channels: 1
       sample_rate: 48000
+      sources:
+        - audio_file_announcement_source
+        - http_announcement_source
     media_pipeline:
       speaker: media_spk_resampling_input
-      format: FLAC # FLAC is the least processor intensive codec
+      format: FLAC # FLAC is the least processor intensive codec (CPU is shared with AEC + MWW)
       num_channels: 1
       sample_rate: 48000
-    files:
-      - id: wakeup
-        file: "${wakeup_sound_url}"
-      - id: error
-        file: "${error_sound_url}"
-      - id: mute
-        file: "${mute_sound_url}"
-      - id: unmute
-        file: "${unmute_sound_url}"
-      - id: timer_finished
-        file: "${timer_finished_sound_url}"
+      sources:
+        - http_media_source
+        - sendspin_media_source
     on_state:
       then:
         - lambda: |-
@@ -377,13 +431,44 @@ media_player:
             if(abs(new_volume-old_volume) > 0.0001) {
               if(old_volume != -1) {
                 if(!id(timer_ringing).state && !id(alarm_siren).state) {
-                  id(show_volume)->execute();
+                  // always show volume changes from the touch buttons, remote changes (HA/MA) only if enabled
+                  bool is_button = id(volume_down).state || id(volume_up).state;
+                  if (is_button || id(show_remote_volume_led_switch).state) {
+                    id(show_volume)->execute();
+                  }
                 }
               }
             }
             old_volume = new_volume;
+        # Announcement finished -> stop ducking (Assist and the ringing timer manage their own ducking)
+        - if:
+            condition:
+              and:
+                - not:
+                    media_player.is_announcing: nabu
+                - not: voice_assistant.is_running
+                - not:
+                    switch.is_on: timer_ringing
+            then:
+              - mixer_speaker.apply_ducking:
+                  id: media_spk_mixer_input
+                  decibel_reduction: 0
+                  duration: 1.0s
     on_announcement:
       - logger.log: "On Announce"
+      # HA announcements (tts.speak, assist_satellite.announce, ...): music only quieter
+      # (not during Assist, which may have the music practically off for speech input)
+      - if:
+          condition:
+            and:
+              - not: voice_assistant.is_running
+              - not:
+                  switch.is_on: timer_ringing
+          then:
+            - mixer_speaker.apply_ducking:
+                id: media_spk_mixer_input
+                decibel_reduction: 20
+                duration: 0.0s
     on_play:
       - logger.log: "On Play"
       - lambda: id(internal_flicker) = false; # needed to deactivate flicker on audio playback
@@ -449,10 +534,14 @@ voice_assistant: # need to use a 16khz due to mww
   noise_suppression_level: 2
   auto_gain: 10 dbfs
   volume_multiplier: 1.0
+  # Ducking of the music (media pipeline) during Assist:
+  #   speech input (on_start until on_stt_vad_end): practically off (255 dB, max since ESPHome 2026.10)
+  #   thinking/reply (on_stt_vad_end / on_tts_start): 20 dB quieter
+  #   on_end: back to normal (unless a timer rings)
   on_start:
-    - mixer_speaker.apply_ducking: # useful if music is started in the background
+    - mixer_speaker.apply_ducking:
         id: media_spk_mixer_input
-        decibel_reduction: 30 # Number of dB quieter; higher implies more quiet, 0 implies full volume
+        decibel_reduction: 255 # Number of dB quieter; higher implies more quiet, 0 implies full volume -> practically off while the mic records speech
         duration: 0.0s # The duration of the transition (default is no transition) -> duck now
   on_listening:
     - lambda: id(led_state) = "listening";
@@ -460,6 +549,15 @@ voice_assistant: # need to use a 16khz due to mww
   on_stt_vad_end:
     - lambda: id(led_state) = "thinking";
     - script.execute: controle_leds
+    - mixer_speaker.apply_ducking: # speech input finished -> music only quieter
+        id: media_spk_mixer_input
+        decibel_reduction: 20
+        duration: 0.5s
+  on_tts_start: # fallback if no VAD end event was sent (e.g. speech ended by timeout)
+    - mixer_speaker.apply_ducking:
+        id: media_spk_mixer_input
+        decibel_reduction: 20
+        duration: 0.5s
   on_tts_end:
     - lambda: id(led_state) = "replying";
     - script.execute: controle_leds
@@ -469,16 +567,22 @@ voice_assistant: # need to use a 16khz due to mww
     - logger.log: "calling on end"
     - wait_until:
         condition:
-          - media_player.is_announcing:
+          - media_player.is_announcing: nabu
         timeout: 0.5s
     - wait_until:
-        - and:
-            - not:
-                media_player.is_announcing:
-    - mixer_speaker.apply_ducking: # Stop ducking audio
-        id: media_spk_mixer_input
-        decibel_reduction: 0
-        duration: 1.0s
+        condition:
+          not:
+            media_player.is_announcing: nabu
+        timeout: 60s # long TTS answers
+    - if:
+        condition:
+          not:
+            switch.is_on: timer_ringing # the ringing timer keeps its own ducking
+        then:
+          - mixer_speaker.apply_ducking: # Stop ducking audio
+              id: media_spk_mixer_input
+              decibel_reduction: 0
+              duration: 1.0s
     - lambda: id(led_state) = "idle";
     - script.execute: controle_leds
     - if:
@@ -487,7 +591,7 @@ voice_assistant: # need to use a 16khz due to mww
             - switch.is_on: use_wake_word
             - switch.is_off: master_mute_switch
             - not:
-                media_player.is_playing:
+                media_player.is_playing: nabu
         then:
           - micro_wake_word.start:
   on_client_connected:
@@ -508,8 +612,9 @@ voice_assistant: # need to use a 16khz due to mww
           - voice_assistant.stop:
           - micro_wake_word.stop:
   on_error:
-    - media_player.speaker.play_on_device_media_file:
-        media_file: error
+    - media_player.play_media:
+        id: nabu
+        media_url: "audio-file://error"
         announcement: true
     - lambda: id(led_state) = "error";
     - script.execute: controle_leds
@@ -651,16 +756,15 @@ binary_sensor:
                                           - not:
                                               switch.is_on: master_mute_switch
                                       then:
-                                        - media_player.speaker.play_on_device_media_file:
-                                            media_file: wakeup
+                                        - media_player.play_media:
+                                            id: nabu
+                                            media_url: "audio-file://wakeup"
                                             announcement: true
                                         - wait_until:
-                                            speaker.is_playing:
-                                              id: onju_out
-                                        #- wait_until:
-                                        #    not:
-                                        #      speaker.is_playing:
-                                        #        id: onju_out
+                                            condition:
+                                              speaker.is_playing:
+                                                id: announcement_spk_resampling_input
+                                            timeout: 2s
                                         - delay: 50ms
                                         - voice_assistant.start
       - timing: # double click
@@ -699,16 +803,19 @@ binary_sensor:
           - micro_wake_word.stop
           - media_player.stop:
               id: nabu
-          #- microphone.stop_capture
+          - media_player.stop:
+              id: sendspin_group_media_player
           - mixer_speaker.apply_ducking:
               id: media_spk_mixer_input
               decibel_reduction: 0
               duration: 0.0s
           - delay: 500ms
           - wait_until:
-              not:
-                speaker.is_playing:
-                  id: onju_out
+              condition:
+                not:
+                  speaker.is_playing:
+                    id: onju_out
+              timeout: 3s
           - lambda: id(led_state) = "idle";
           - script.execute: controle_leds
           - delay: 100ms
@@ -736,29 +843,39 @@ binary_sensor:
           condition:
             - switch.is_off: master_mute_switch
           then:
-            - media_player.speaker.play_on_device_media_file:
-                media_file: mute
+            - media_player.play_media:
+                id: nabu
+                media_url: "audio-file://mute"
                 announcement: true
             - wait_until:
-                speaker.is_playing:
-                  id: announcement_spk_resampling_input
-            - wait_until:
-                not:
+                condition:
                   speaker.is_playing:
                     id: announcement_spk_resampling_input
+                timeout: 2s
+            - wait_until:
+                condition:
+                  not:
+                    speaker.is_playing:
+                      id: announcement_spk_resampling_input
+                timeout: 3s
             - script.execute: turn_off_wake_word
       - script.execute: turn_off_wake_word
     on_release:
-      - media_player.speaker.play_on_device_media_file:
-          media_file: unmute
+      - media_player.play_media:
+          id: nabu
+          media_url: "audio-file://unmute"
           announcement: true
       - wait_until:
-          speaker.is_playing:
-            id: announcement_spk_resampling_input
-      - wait_until:
-          not:
+          condition:
             speaker.is_playing:
               id: announcement_spk_resampling_input
+          timeout: 2s
+      - wait_until:
+          condition:
+            not:
+              speaker.is_playing:
+                id: announcement_spk_resampling_input
+          timeout: 3s
       - delay: 100ms
       - switch.turn_off: master_mute_switch
       - script.execute: turn_on_wake_word
@@ -799,7 +916,7 @@ light:
     pin: GPIO11
     chipset: SK6812
     num_leds: 6
-    rgb_order: grb
+    channel_colors: GRB # replaces the deprecated rgb_order (removed in 2027.3.0)
     default_transition_length: 0s
     gamma_correct: 2.8
   - platform: partition
@@ -1065,13 +1182,7 @@ script:
               - switch.is_off: master_mute_switch
               - switch.is_on: use_wake_word
           then:
-            - if:
-                condition:
-                  speaker.is_playing:
-                    id: onju_out
-                then:
-                  - speaker.stop:
-                      id: onju_out
+            # NOTE no speaker.stop here (needed only for the single i2s bus): with duplex it would cut music/announcements
             - lambda: id(led_state) = "idle";
             - script.execute: controle_leds
             - micro_wake_word.start
@@ -1107,16 +1218,21 @@ script:
           condition:
             - switch.is_on: timer_ringing
           then:
-            - media_player.speaker.play_on_device_media_file:
-                media_file: timer_finished
+            - media_player.play_media:
+                id: nabu
+                media_url: "audio-file://timer_finished"
                 announcement: true
             - wait_until:
-                speaker.is_playing:
-                  id: announcement_spk_resampling_input
-            - wait_until:
-                not:
+                condition:
                   speaker.is_playing:
                     id: announcement_spk_resampling_input
+                timeout: 2s
+            - wait_until:
+                condition:
+                  not:
+                    speaker.is_playing:
+                      id: announcement_spk_resampling_input
+                timeout: 10s
             - delay: 500ms
 
   - id: play_alarm_loop
@@ -1129,12 +1245,16 @@ script:
                 id: nabu
                 media_url: "${alarm_sound_url}"
             - wait_until:
-                media_player.is_playing:
-                  id: nabu
-            - wait_until:
-                not:
+                condition:
                   media_player.is_playing:
                     id: nabu
+                timeout: 5s # HTTP stream start
+            - wait_until:
+                condition:
+                  not:
+                    media_player.is_playing:
+                      id: nabu
+                timeout: 60s
             - delay: 250ms
 
   - id: check_if_timers_active
@@ -1150,12 +1270,13 @@ script:
           id(is_timer_active) = output;
 
 switch:
-  #- platform: i2s_audio_duplex
-  #  aec:
-  #    id: aec_switch
-  #    name: "Echo Cancellation"
-  #    icon: mdi:ear-hearing
-  #    restore_mode: RESTORE_DEFAULT_ON
+  - platform: esp_audio_stack # bypasses the whole AEC processor when off (useful for A/B tests)
+    esp_audio_stack_id: i2s_shared
+    aec:
+      id: aec_switch
+      name: "Echo Cancellation"
+      icon: mdi:ear-hearing
+      restore_mode: RESTORE_DEFAULT_ON
   # This is the master mute switch. It is exposed to Home Assistant. The user can only turn it on and off if the hardware switch is off. (The hardware switch overrides the software one)
   - platform: template
     id: master_mute_switch
@@ -1260,6 +1381,9 @@ switch:
       - lambda: id(led_state) = "timer_ringing";
       - script.execute: controle_leds
       # If 15 minutes have passed and the timer is still ringing, stop it.
+      # TODO known issue: re-triggering does not cancel a pending delay (each turn_on runs in parallel). If a second timer
+      # rings within 15min after the first one, the first run's delay turns the second one off early.
+      # Fix: move delay + turn_off into a script with mode: restart, execute it here and stop it in on_turn_off.
       - delay: 15min
       - switch.turn_off: timer_ringing
       - lambda: id(led_state) = "idle";
@@ -1271,7 +1395,7 @@ switch:
     icon: mdi:alarm-light
     entity_category: ""
     optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: ALWAYS_OFF # never restart the siren after a reboot/power loss
     on_turn_on:
       # Save volume
       - lambda: id(old_volume_level) = id(nabu).volume;
@@ -1282,6 +1406,8 @@ switch:
       - lambda: id(led_state) = "alarm";
       - script.execute: controle_leds
       # Timeout 5 minutes
+      # TODO known issue: same as timer_ringing - a pending delay from an earlier turn_on can switch a new alarm off early.
+      # Fix: move delay + turn_off into a script with mode: restart.
       - delay: 5min
       - switch.turn_off: alarm_siren
     on_turn_off:
@@ -1298,3 +1424,21 @@ switch:
       - lambda: id(internal_flicker) = true;
       - lambda: id(led_state) = "idle";
       - script.execute: controle_leds
+
+  # Show the volume LEDs also for volume changes from HA / Music Assistant (touch buttons always show it)
+  - platform: template
+    id: show_remote_volume_led_switch
+    name: "LED bei Remote-Lautstaerke"
+    icon: "mdi:volume-vibrate"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  # Pulse the LEDs red on WiFi/API connection loss
+  - platform: template
+    id: show_connection_error_led_switch
+    name: "Blinken bei Verbindungsfehler"
+    icon: "mdi:wifi-alert"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
