@@ -61,7 +61,6 @@ esp32:
   variant: esp32s3
   cpu_frequency: 240MHz
   flash_size: 16MB
-  # partitions: partitions.csv # NOTE only applicable if flashed via cable. DO NOT FLASH VIA OTA. Check partions.csv for completeness and soundness first
   framework:
     type: esp-idf
     version: recommended

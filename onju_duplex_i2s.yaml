@@ -69,7 +69,6 @@ esp32:
   variant: esp32s3
   cpu_frequency: 240MHz
   flash_size: 16MB
-  # partitions: partitions.csv # NOTE only applicable if flashed via cable. DO NOT FLASH VIA OTA. Check partions.csv for completeness and soundness first
   framework:
     type: esp-idf
     version: recommended
@@ -213,6 +212,16 @@ interval:
                         - lambda: id(led_state) = "idle";
                         - script.execute: controle_leds
 
+# IDEA (not implemented yet): wake word watchdog
+# Background: with Audio Stack 2026.7 the wake word stopped working after a while and only a reboot helped.
+# Cause (from the 2026.7 code): any I2S error set a mic error status that was never cleared, so the mic never
+# restarted and MWW got no audio anymore. Since 2026.11 the error is cleared once the audio path works again,
+# but a failed session only restarts on the NEXT start request (mic or speaker). MWW keeps the mic open
+# permanently and never requests a new start, so the mic may stay stopped until the next sound/music plays.
+# Watchdog: an interval (e.g. 30s) checks use_wake_word on, master_mute_switch off, api.connected,
+# voice_assistant not running and NOT microphone.is_capturing(i2s_mics) -> micro_wake_word.stop, short delay,
+# micro_wake_word.start (the new mic start request restarts the failed audio session).
+# Only needed if the log shows "I2S error detected in audio task" without a following "I2S audio path recovered".
 micro_wake_word: # requires 16khz input currently
   id: mww
   microphone:

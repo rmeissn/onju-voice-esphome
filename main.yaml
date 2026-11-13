@@ -1,11 +1,17 @@
-# use this file cirectly or copy the content into your own esphome yaml file and adjust the substitutions and packages as needed and per device
+# use this file directly or copy the content into your own esphome yaml file and adjust the substitutions and packages as needed and per device
 substitutions:
   name: "onju-voice"
   friendly_name: "Onju Voice Example Device"
-  project_version: "1.2.0"
+  project_version: "1.3.0"
   device_description: "Onju Voice Satellite with ESPHome software and microWakeWord"
+  # The sound files are loaded from Home Assistant at build time (HA folder config/www -> URL /local/...).
+  # Override the *_sound_url substitutions of the chosen config with the address of your HA instance, e.g.:
+  # wakeup_sound_url: "http://homeassistant.local:8123/local/wakeup.flac"
 
 packages:
-  - !include onju.yaml
+  # choose one of the configs:
+  - !include onju_duplex_i2s.yaml # mic and speaker at the same time, echo cancellation, Assist + Sendspin (not yet tested on the device after the 2026.10 update)
+  # - !include onju_media_player.yaml # media player only (no microphone, no Assist), Sendspin - rock stable
+  # - !include onju_single_i2s.yaml # classic: mic and speaker share the bus alternately, ESPHome components only
   - !include wifi.yaml
   - !include ota.yaml
