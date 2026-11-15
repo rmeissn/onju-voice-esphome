@@ -24,7 +24,7 @@ external_components:
   # Audio Stack 2026.11.0 requires ESPHome >= 2026.10.0 and uses ESPHome's own speaker, mixer, resampler,
   # media_player, voice_assistant and micro_wake_word (no overrides needed).
   # esp_audio_capture is only compiled when diagnostics/audio_capture.yaml is included.
-  # Fork branch = v2026.11.0 + the mic fix options rx_clock / rx_data_delay (PR to upstream dev pending). Back to github://n-IA-hane/esphome-audio-stack@<release> once a release contains them. docs/AUDIO_INVESTIGATION.md
+  # Fork branch = v2026.11.0 + the mic fix options rx_clock / rx_data_delay (upstream PR https://github.com/n-IA-hane/esphome-audio-stack/pull/17). Back to github://n-IA-hane/esphome-audio-stack@<release> once a release contains them. docs/AUDIO_INVESTIGATION.md
   - source: github://rmeissn/esphome-audio-stack@onju/i2s-clock-source
     components: [esp_audio_stack, esp_aec, esp_audio_capture]
     refresh: 0s
@@ -389,7 +389,7 @@ esp_aec:
   # sr_high_perf removed 15-30 / 11-22 dB echo below 3 kHz (sr_low_cost 8-9 / 8), talker intact (<= 1 dB), wake word better after the AEC, less core0 load and more free internal RAM. docs/AUDIO_INVESTIGATION.md
   mode: sr_high_perf
   filter_length: 4 # ESP-SR echo filter length (1-8, not ms): higher tracks longer echo tails but costs more CPU/RAM
-  # 4: stable, core0 ~11% idle. 8: ~3.7dB less residual echo below 1kHz, but core0 ~50% idle / ~60-75% with music and ~13kB more internal RAM. 6: BROKEN (no audio, heap corruption).
+  # 4: stable, core0 ~11% idle. 8: ~3.7dB less residual echo below 1kHz, but core0 ~50% idle / ~60-75% with music and ~13kB more internal RAM. 6: BROKEN (no audio, heap corruption; https://github.com/n-IA-hane/esphome-audio-stack/issues/18).
   # Details: docs/AUDIO_INVESTIGATION.md "AEC filter length".
 
 speaker:

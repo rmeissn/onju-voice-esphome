@@ -42,7 +42,7 @@ Diagnostic build after music + Assist (`filter_length: 8`): `loopTask` (componen
 
 ## Problems seen
 
-- **`filter_length: 6` is broken:** core0 at 100 %, no audio frames, heap corrupted (the next reboot aborted in `tlsf_free`). Never use it.
+- **`filter_length: 6` is broken:** core0 at 100 %, no audio frames, heap corrupted (the next reboot aborted in `tlsf_free`). Never use it. Reported upstream: [issue #18](https://github.com/n-IA-hane/esphome-audio-stack/issues/18).
 - **Runtime AEC reinit** (mode switch at runtime): internal RAM dropped to 5.6 kB (two AEC instances), I2S error "TX frame not aligned to DMA buffer", 17 s audio outage, then the AEC added echo until the next reboot. Change AEC settings in YAML and flash.
 - **micro_wake_word ring buffer overflow** (`Not enough free bytes in ring buffer ... Resetting`) at music/stream starts (and capture start/stop), usually right after `speaker_source.media_player took a long time for an operation (~70–130 ms)`. Not a RAM problem: the ring buffer holds only 120 ms (fixed in ESPHome) and the inference task runs at priority 3, so stream/codec setup blocks it. Effect: ~120 ms of audio missing for the wake word, once per music start. Harmless unless it shows up during normal playback or near missed wake words.
 - **Music start transient:** Sendspin `Lost sync` and `spk_underrun` 26–80 in the first window after a stream start (short audible glitch), then 0 during steady music.

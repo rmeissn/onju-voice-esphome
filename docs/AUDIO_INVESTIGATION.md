@@ -8,7 +8,7 @@ Measurements of the Onju microphones, AEC, levels and Assist behaviour with `onj
 
 | Topic | Finding | Setting |
 | --- | --- | --- |
-| Mic read bug | The full-duplex RX read the SPH0645 data one BCLK late or slipping, random per audio session (only ~19 % of sessions were correct) | `rx_clock: fast` + `rx_data_delay: pos_edge` + `input_gain: 2.0` (Audio Stack fork branch, PR upstream) |
+| Mic read bug | The full-duplex RX read the SPH0645 data one BCLK late or slipping, random per audio session (only ~19 % of sessions were correct) | `rx_clock: fast` + `rx_data_delay: pos_edge` + `input_gain: 2.0` (Audio Stack fork branch, upstream [PR #17](https://github.com/n-IA-hane/esphome-audio-stack/pull/17)) |
 | Mic choice | The left mic picks up the own speaker ~20 dB louder (internal path); with music the right mic alone is clearly better; units may differ | default: average both; per device: measure and override (e.g. `mic_channel: right`) |
 | AEC | `sr_high_perf` + `filter_length: 4` removes 11–30 dB echo below 3 kHz, keeps the talker, helps the wake word | `mode: sr_high_perf`, `filter_length: 4`; never 6, never change at runtime |
 | Gain | 16× keeps ≥ 7 dB headroom for a loud sentence close by; wake word and HA's VAD do not depend on the gain | `gain_factor: 16` (wake word and Assist) |
@@ -80,7 +80,7 @@ RX alone on PLL 240 MHz / k, optionally with the SD input delay `rx_timing.rx_sd
 
 - Chosen: both options together (most margin) + `input_gain: 2.0` (the correct read is exactly 6 dB lower than the former late read; raw DC ratio late/correct = 2.00 on both mics).
 - Results: 6 of 6 reboots and, after going back to 16 bit, 10 of 10 session restarts and 3 of 3 reboots correct; one 60 s session with playback correct in every second; no `[W]`/`[E]`.
-- Patch: two opt-in options in Audio Stack (`rx_clock: default | fast`, `rx_data_delay: none | pos_edge | neg_edge`, ESP32-S3 only, validated at config time). The test switches of the scan are kept as a patch with a rebuild guide in `diagnostics/RX_CLOCK_SCAN.md`.
+- Patch: two opt-in options in Audio Stack (`rx_clock: default | fast`, `rx_data_delay: none | pos_edge | neg_edge`, ESP32-S3 only, validated at config time), upstream [PR #17](https://github.com/n-IA-hane/esphome-audio-stack/pull/17). The test switches of the scan are kept as a patch with a rebuild guide in `diagnostics/RX_CLOCK_SCAN.md`.
 - Not implemented (not needed with the fix): on-device detection and recovery (a session restart heals a wrong session, but the raw data is not accessible from YAML; the processed noise level differs by only 4–7 dB).
 
 ## Microphones: left, right, average
@@ -109,7 +109,7 @@ Quiet room, speech SNR (noise subtracted) for 300–1000 Hz / 1–3 kHz / 3–7 
 | `sr_high_perf`, 4 (chosen) | echo removed 15–30 / 11–22 dB below 3 kHz in two captures (`sr_low_cost`: 8–9 / 8 dB), talker preserved within ~1 dB, offline wake word probability before → after the AEC 0.63 → 0.94 and 0.85 → 0.93; core0 ~32 %, core1 ~25 % with music, more free RAM |
 | `sr_low_cost`, 4 | stable, cheaper on core0 but less echo removal |
 | `filter_length: 8` | ~3.7 dB less residual echo below 1 kHz than 4, costs ~39 % more core0 load and 13 kB internal RAM: not worth it |
-| `filter_length: 6` | **broken**: no audio frames, heap corruption. Never use |
+| `filter_length: 6` | **broken**: no audio frames, heap corruption. Never use ([issue #18](https://github.com/n-IA-hane/esphome-audio-stack/issues/18)) |
 | Runtime change of mode or length | broke the I2S lockstep (17 s outage, extra echo until reboot): only change in YAML and flash |
 
 - An earlier comparison that favoured `sr_low_cost` (and saw a 32 ms / 3.5 dB reference shift with every other setting) ran before the mic fix on randomly misread sessions; with the fix the shift did not reappear.
