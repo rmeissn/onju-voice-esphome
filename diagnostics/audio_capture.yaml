@@ -1,0 +1,44 @@
+# PCM capture for audio tuning (Audio Stack 2026.11.0, docs/AUDIO_TUNING.md of the Audio Stack repo), for
+# onju_duplex_i2s.yaml. Include in the device file and set capture_address there:
+#   substitutions:
+#     capture_address: "192.168.x.y" # computer running tools/capture_audio.py
+#   packages:
+#     - !include onju_duplex_i2s.yaml
+#     - !include diagnostics/audio_capture.yaml
+# Streams WAVs via plain TCP to tools/capture_audio.py, started/stopped by the "Start/Stop audio capture" buttons.
+# While inactive no buffer, task or socket exists (~7kB internal RAM only while capturing).
+# Workflow and analysis: docs/AUDIO_INVESTIGATION.md (tools/analyze_capture.py, tools/mic_check.sh).
+# Points:
+#   raw_mic          - the selected physical mic(s) as read from I2S (both slots with rx_mic_slots), 48kHz, 16 bit
+#                      (= bits_per_sample), before averaging, DC filter, gain and AEC
+#   reference        - speaker reference passed to the AEC, 16kHz
+#   processor_input  - mic after rate conversion, (averaging) and DC filter = AEC input, 16kHz
+#   processor_output - AEC output before mic_gain, 16kHz
+#   output           - final mic signal after mic_gain = what MWW and Assist get (before their gain_factor), 16kHz
+
+substitutions:
+  capture_address: "192.0.2.10" # placeholder (TEST-NET documentation address), override it in the device file
+
+esp_audio_capture:
+  id: audio_capture
+  esp_audio_stack_id: i2s_shared
+  microphone_id: i2s_mics
+  address: ${capture_address}
+  port: 19091 # TCP, must be reachable on the receiving computer (firewall)
+  duration: 60s # max 120s; 60s fits a music part and a silent part in one capture
+  buffer_size: 262144 # max; the default 65536 may drop data with raw_mic over WiFi (~0.5MB/s with all points)
+  points: [raw_mic, reference, processor_input, processor_output, output]
+
+button:
+  - platform: template
+    name: "Start audio capture"
+    entity_category: diagnostic
+    icon: "mdi:record-rec"
+    on_press:
+      - esp_audio_capture.start: audio_capture
+  - platform: template
+    name: "Stop audio capture"
+    entity_category: diagnostic
+    icon: "mdi:stop"
+    on_press:
+      - esp_audio_capture.stop: audio_capture

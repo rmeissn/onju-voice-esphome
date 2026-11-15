@@ -1,0 +1,42 @@
+# Measurement aids for onju_duplex_i2s.yaml (include in the device file while measuring, remove for daily use):
+#   packages:
+#     - !include onju_duplex_i2s.yaml
+#     - !include diagnostics/monitor.yaml
+# - resource monitor (diagnostics/onju_monitor.h): RAM/DMA/PSRAM used/free/min + CPU load per core every 10s (tag "monitor")
+# - Audio Stack telemetry: "Perf[...]" every 128 audio frames (frame interval, speaker underruns, internal heap)
+# - runtime_stats: main loop time per component (tag "runtime_stats")
+# How to read the values: docs/RESOURCE_INVESTIGATION.md.
+
+esphome:
+  includes:
+    - diagnostics/onju_monitor.h
+
+esp32:
+  framework:
+    sdkconfig_options:
+      # FreeRTOS run time stats for the CPU load per core (esp_timer clock, small overhead per context switch,
+      # a few bytes per task in internal RAM)
+      CONFIG_FREERTOS_USE_TRACE_FACILITY: "y"
+      CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS: "y"
+      CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64: "y"
+      # Only for the optional expensive details below (task core affinity in the task list, costs flash only):
+      # CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS: "y"
+      # CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID: "y"
+
+esp_audio_stack:
+  # needs logger level DEBUG (the default); small overhead in the audio task
+  telemetry: true
+
+interval:
+  - interval: 10s
+    then:
+      - lambda: onju_monitor::log_stats();
+  # Optional, expensive (heap walk + task snapshot under spinlocks, can delay the audio task by a few ms; the log
+  # shows "took"): largest free block per heap, busiest tasks, least stack headroom. Uncomment together with the two
+  # FreeRTOS formatting options above.
+  # - interval: 60s
+  #   then:
+  #     - lambda: onju_monitor::log_details();
+
+runtime_stats:
+  log_interval: 60s

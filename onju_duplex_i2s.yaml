@@ -13,13 +13,20 @@ substitutions:
   knock_sound_url: "http://192.168.0.202:8123/local/knock.flac" # https://freesound.org/people/UberBosser/sounds/421585/
   click_sound_url: "http://192.168.0.202:8123/local/tongue-click.flac" # https://freesound.org/people/MichellePamelaLyons/sounds/135515/
   alarm_sound_url: "http://192.168.0.202:8123/local/alarm.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
+  # Delay from the wake sound start (announcement path playing) to voice_assistant.start: near the end of the sound's audible part (450ms for the 550/745ms sound; set it with a shorter wakeup_sound_url). docs/AUDIO_INVESTIGATION.md
+  wake_listen_delay: 450ms
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
+
+# Measurement aids (resource monitor, telemetry, PCM capture, heap diagnostic) are separate packages in diagnostics/,
+# include them in the device file while measuring (see the header of each file).
 
 external_components:
   # Audio Stack 2026.11.0 requires ESPHome >= 2026.10.0 and uses ESPHome's own speaker, mixer, resampler,
   # media_player, voice_assistant and micro_wake_word (no overrides needed).
-  - source: github://n-IA-hane/esphome-audio-stack@v2026.11.0
-    components: [esp_audio_stack, esp_aec]
+  # esp_audio_capture is only compiled when diagnostics/audio_capture.yaml is included.
+  # Fork branch = v2026.11.0 + the mic fix options rx_clock / rx_data_delay (PR to upstream dev pending). Back to github://n-IA-hane/esphome-audio-stack@<release> once a release contains them. docs/AUDIO_INVESTIGATION.md
+  - source: github://rmeissn/esphome-audio-stack@onju/i2s-clock-source
+    components: [esp_audio_stack, esp_aec, esp_audio_capture]
     refresh: 0s
 
 esphome:
@@ -72,6 +79,7 @@ esp32:
   framework:
     type: esp-idf
     version: recommended
+    # NOTE PERF (-O2) makes the firmware ~2.4MB -> needs the 16MB partition table (app partitions 0x7C0000), see README
     advanced:
       compiler_optimization: PERF
     sdkconfig_options:
@@ -90,7 +98,12 @@ esp32:
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
       CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y" # TLS1.3 support isn't enabled by default in IDF 5.1.5
 
-      CONFIG_ESP_WIFI_EXTRA_IRAM_OPT: "y"
+      # WiFi code out of IRAM: +22.8kB internal RAM, slightly lower peak WiFi throughput (docs/RESOURCE_INVESTIGATION.md).
+      # Not used: 10 instead of 16 static WiFi RX buffers (~9.6kB, more packet loss risk), see docs/RESOURCE_INVESTIGATION.md.
+
+      CONFIG_ESP_WIFI_IRAM_OPT: "n"
+      CONFIG_ESP_WIFI_RX_IRAM_OPT: "n"
+      CONFIG_ESP_WIFI_EXTRA_IRAM_OPT: "n"
 
 psram:
   mode: octal
@@ -111,8 +124,9 @@ wifi:
 
 captive_portal:
 
+# IPv6 off: recommended, saves internal RAM in the network stack (docs/RESOURCE_INVESTIGATION.md)
 network:
-  enable_ipv6: true
+  enable_ipv6: false
 
 api:
   id: api_id
@@ -227,7 +241,9 @@ micro_wake_word: # requires 16khz input currently
   microphone:
     microphone: i2s_mics # mww_microphone
     channels: 0
-    gain_factor: 32 # TODO find optimal value, probably 8 to 16 if speaker is recorded, 32 to 64 if no speaker is active (or very quiete)
+    gain_factor: 16
+    # Measured with 32: normal speech at 1-3m peaks -9..-14dBFS, a loud sentence from 30-50cm -3.6dBFS (no clipping).
+    # 16 keeps 7 dB headroom for a loud sentence close by.
   models:
     - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
       id: okay_nabu
@@ -237,6 +253,11 @@ micro_wake_word: # requires 16khz input currently
         condition:
           - switch.is_on: use_wake_word # ignore detection if switch is off
         then:
+          # Duck the music now, not in on_start: otherwise up to 150ms of undimmed music (onju_out buffer) reach the STT
+          - mixer_speaker.apply_ducking:
+              id: media_spk_mixer_input
+              decibel_reduction: 255
+              duration: 0.2s
           - media_player.play_media:
               id: nabu
               media_url: "audio-file://wakeup"
@@ -247,14 +268,25 @@ micro_wake_word: # requires 16khz input currently
                 speaker.is_playing:
                   id: announcement_spk_resampling_input
               timeout: 2s
-          - wait_until:
-              condition:
-                not:
-                  speaker.is_playing:
-                    id: announcement_spk_resampling_input
-              timeout: 3s
+          # Start listening near the end of the sound's audible part instead of after the whole playback: users start
+          # talking when they hear the end (AEC removes the tail). docs/AUDIO_INVESTIGATION.md
+          - delay: ${wake_listen_delay}
           - voice_assistant.start:
               wake_word: !lambda return wake_word;
+          # Unduck if the voice assistant did not start (e.g. API not connected), otherwise on_end does it
+          - wait_until:
+              condition: voice_assistant.is_running
+              timeout: 2s
+          - if:
+              condition:
+                and:
+                  - not: voice_assistant.is_running
+                  - switch.is_off: timer_ringing
+              then:
+                - mixer_speaker.apply_ducking:
+                    id: media_spk_mixer_input
+                    decibel_reduction: 0
+                    duration: 1.0s
 
 number:
   # NOTE no master_volume number: Audio Stack then keeps its master volume at 100%, so the media player volume
@@ -264,8 +296,30 @@ number:
     mic_gain: # NOTE since Audio Stack 2026.11.0 positive gain is a constant boost from the first sample (no level gate anymore) -> recheck saved values for clipping
       id: mic_gain
       name: Mic Gain
+      entity_category: diagnostic # measured and set to 0 (docs/AUDIO_INVESTIGATION.md), change only while measuring
       min_value: -20
       max_value: 30
+  # Volume of the alarm siren (media player volume while it rings).
+  - platform: template
+    name: "Alarm volume"
+    id: alarm_volume
+    icon: mdi:volume-high
+    entity_category: config
+    unit_of_measurement: "%"
+    min_value: 10
+    max_value: 100
+    step: 5
+    initial_value: 100
+    restore_value: false
+    optimistic: true
+    on_value:
+      - if:
+          condition:
+            switch.is_on: alarm_siren
+          then:
+            - media_player.volume_set:
+                id: nabu
+                volume: !lambda return x / 100.0f;
 
 select:
   - platform: template
@@ -313,11 +367,13 @@ esp_audio_stack:
   aec_reference_buffer_ms: 80 # ring capacity, not a fixed delay
   slot_bit_width: 32 # SPH0645 needs 32-bit I2S frames
   correct_dc_offset: true # removes DC bias from SPH0645 MEMS mics
-  # Both mics (left + right slot on the shared data line) averaged to mono before the AEC (new in 2026.11.0, cf. examples/05-stereo-i2s-downmix.yaml)
-  # NOTE the old stereo capture made the mics quieter and destroyed the SNR (1-2db vs. ~16db with one mic). TODO: retest with mic_mix: average
-  # If one slot turns out to be silent/noisy, averaging halves the level (-6db) -> fall back to a single mic:
-  # remove rx_mic_slots + mic_mix and set mic_channel: left (or right)
-  rx_slot_mode: stereo
+  # Mic bug fix: without it the RX reads the mics one BCLK late or slipping, random per audio session.
+  # RX on its own fast integer clock + data input delayed one tick -> correct in every session. docs/AUDIO_INVESTIGATION.md
+  rx_clock: fast
+  rx_data_delay: pos_edge
+  input_gain: 2.0 # the correct read is 6 dB lower than the former (late) one: keeps the level for AEC/MWW/VA
+  # Measure the mics with the scripts provided to find good and bad mics. Sometimes, only one mic is better then both averaged.
+  rx_slot_mode: stereo # both slots are clocked on the shared data line
   rx_mic_slots: [left, right]
   mic_mix: average
   # NOTE num_channels only describes the TX (speaker) bus, it does NOT enable stereo capture.
@@ -330,8 +386,11 @@ esp_aec:
   #   sr_low_cost  - recommended starting point for VA + MWW
   #   sr_high_perf - higher-cost SR/FFT variant, needs a large contiguous DMA-capable internal heap block (rejected at runtime if missing)
   # fd_low_cost/fd_high_perf and voip_low_cost/voip_high_perf add residual echo suppression (better for calls, may hurt wake word detection)
-  mode: sr_low_cost
+  # sr_high_perf removed 15-30 / 11-22 dB echo below 3 kHz (sr_low_cost 8-9 / 8), talker intact (<= 1 dB), wake word better after the AEC, less core0 load and more free internal RAM. docs/AUDIO_INVESTIGATION.md
+  mode: sr_high_perf
   filter_length: 4 # ESP-SR echo filter length (1-8, not ms): higher tracks longer echo tails but costs more CPU/RAM
+  # 4: stable, core0 ~11% idle. 8: ~3.7dB less residual echo below 1kHz, but core0 ~50% idle / ~60-75% with music and ~13kB more internal RAM. 6: BROKEN (no audio, heap corruption).
+  # Details: docs/AUDIO_INVESTIGATION.md "AEC filter length".
 
 speaker:
   # Hardware speaker output
@@ -340,20 +399,22 @@ speaker:
     esp_audio_stack_id: i2s_shared
     sample_rate: 48000 # DAC supports 8kHz to 96kHz; must equal esp_audio_stack.sample_rate (validated since 2026.11.0)
     bits_per_sample: 16 # DAC supports 16/24/32 bit, but the public speaker PCM of Audio Stack is always 16 bit
+    # Default 500ms: with music it is full, so the wake sound/TTS started up to 500ms late. Voice PE uses 100ms, but the AEC keeps core0 busy here.
+    buffer_duration: 150ms
 
   # Virtual speakers to combine the announcement and media streams together into one output
+  # NOTE task_stack_in_psram on mixer, resamplers and media sources: internal RAM is the bottleneck of the duplex config. Then the mixer task could not be created ("speaker_mixer: Failed to start; retrying in 1 second" in a loop -> no TTS reply, no wake sound).
   - platform: mixer
     id: mixer_speaker_id
     output_speaker: onju_out
     num_channels: 1
-    # task_stack_in_psram: true
+    task_stack_in_psram: true
     source_speakers:
+      # buffer_duration: ESPHome default 100ms like the Voice PE (was 500ms, which only added latency to media start)
       - id: announcement_spk_mixer_input
         timeout: 10s
-        buffer_duration: 500ms
       - id: media_spk_mixer_input
         timeout: 10s
-        buffer_duration: 500ms
 
   # Virtual speakers to resample each pipelines' audio, if necessary, as the mixer speaker requires the same sample rate
   - platform: resampler
@@ -362,14 +423,14 @@ speaker:
     sample_rate: 48000
     bits_per_sample: 16
     num_channels: 1
-    # task_stack_in_psram: true
+    task_stack_in_psram: true
   - platform: resampler
     id: announcement_spk_resampling_input
     output_speaker: announcement_spk_mixer_input
     sample_rate: 48000
     bits_per_sample: 16
     num_channels: 1
-    # task_stack_in_psram: true
+    task_stack_in_psram: true
 
 microphone:
   - platform: esp_audio_stack
@@ -393,18 +454,27 @@ audio_file:
     file: "${unmute_sound_url}"
   - id: timer_finished
     file: "${timer_finished_sound_url}"
+  - id: alarm_siren_sound
+    file: "${alarm_sound_url}"
 
 media_source:
   - platform: audio_file
     id: audio_file_announcement_source
+    task_stack_in_psram: true # decoder task, see NOTE at the mixer
   - platform: audio_http # TTS responses, announcements from HA
     id: http_announcement_source
     buffer_size: 65536 # von 250KB auf 64KB reduziert für sofortigen Durchsage-Start (same as onju_media_player.yaml)
-  - platform: audio_http # media from HA / URLs (e.g. the alarm sound)
+    task_stack_in_psram: true # decoder task, see NOTE at the mixer
+  - platform: audio_file # on-device files on the media pipeline (the alarm siren)
+    id: audio_file_media_source
+    task_stack_in_psram: true # decoder task, see NOTE at the mixer
+  - platform: audio_http # media from HA / URLs
     id: http_media_source
     buffer_size: 131072 # von 500KB auf 128KB reduziert für <1s Stream-Start (same as onju_media_player.yaml)
+    task_stack_in_psram: true # decoder task, see NOTE at the mixer
   - platform: sendspin
     id: sendspin_media_source
+    task_stack_in_psram: true # player/decoder task, see NOTE at the mixer (the sendspin hub stays internal: network + time sync)
 
 media_player:
   # Exposes the Sendspin group controls (Music Assistant)
@@ -430,6 +500,7 @@ media_player:
       num_channels: 1
       sample_rate: 48000
       sources:
+        - audio_file_media_source
         - http_media_source
         - sendspin_media_source
     on_state:
@@ -535,16 +606,18 @@ voice_assistant: # need to use a 16khz due to mww
   microphone:
     microphone: i2s_mics # onju_microphone
     channels: 0
-    gain_factor: 32 # TODO find optimal value, probably 8 to 16 if speaker is recorded, 32 to 64 if no speaker is active (or very quiete)
+    gain_factor: 16 # 32 left a loud sentence 1.4-3.6 dB below full scale, 16 gives 7.4-9.6 dB; HA's VAD does not depend on the gain. NS/AGC below re-checked offline. docs/AUDIO_INVESTIGATION.md
   media_player: nabu
   micro_wake_word: mww
   use_wake_word: false
   # For the following three options: speculative tuning based on input audio, as I can't get the resulting file to analyse
-  noise_suppression_level: 2
-  auto_gain: 10 dbfs
+  # noise: 1 instead of 2: fewer artifacts.
+  # NS 1 +1.5 dB speech-to-pause (2-4 no better); AGC 16 gives even levels (~-30 dBFS) and clearly better speech-to-pause with music than 10 (~1.5 dB; 20/31 slightly more, but less headroom); volume 1.0 (a second gain stage, before HA's VAD and speex). HA's VAD does not depend on the level. tools/level_tune.py
+  noise_suppression_level: 1
+  auto_gain: 16 dbfs
   volume_multiplier: 1.0
   # Ducking of the music (media pipeline) during Assist:
-  #   speech input (on_start until on_stt_vad_end): practically off (255 dB, max since ESPHome 2026.10)
+  #   speech input (wake word detection resp. on_start until on_stt_vad_end): practically off (255 dB, max since ESPHome 2026.10)
   #   thinking/reply (on_stt_vad_end / on_tts_start): 20 dB quieter
   #   on_end: back to normal (unless a timer rings)
   on_start:
@@ -574,15 +647,19 @@ voice_assistant: # need to use a 16khz due to mww
     - logger.log: "voice assist idle"
   on_end:
     - logger.log: "calling on end"
+    # on_end fires when HA ends the pipeline, BEFORE the TTS reply plays. The voice assistant stays running (STREAMING_RESPONSE) until the reply announcement finished, then goes idle. Waiting for that instead of "is_announcing within 0.5s": the TTS start took ~0.9s, so LEDs went idle and the music unducked before the reply.
     - wait_until:
         condition:
-          - media_player.is_announcing: nabu
-        timeout: 0.5s
+          not: voice_assistant.is_running
+        timeout: 60s # long TTS answers
+    # The voice assistant goes idle when the reply is DECODED, the end is still buffered (LEDs stopped 0.5-1s early).
+    # The resampler stays "playing" until the mixer source reports all frames as played (DMA completion).
     - wait_until:
         condition:
           not:
-            media_player.is_announcing: nabu
-        timeout: 60s # long TTS answers
+            speaker.is_playing:
+              id: announcement_spk_resampling_input
+        timeout: 5s
     - if:
         condition:
           not:
@@ -599,8 +676,6 @@ voice_assistant: # need to use a 16khz due to mww
           and:
             - switch.is_on: use_wake_word
             - switch.is_off: master_mute_switch
-            - not:
-                media_player.is_playing: nabu
         then:
           - micro_wake_word.start:
   on_client_connected:
@@ -663,6 +738,13 @@ button:
     entity_category: config
     disabled_by_default: true
     icon: "mdi:restart"
+  # Audio Stack diagnostics snapshot in the log (block "BEGIN v=1" ... "END v=1"): counters, hardware layout, lifecycle state. Works without telemetry. Take one while audio works and one while a fault is present (e.g. the corrupted right mic, see docs/AUDIO_INVESTIGATION.md). Presses within 1s are ignored.
+  - platform: template
+    name: "Audio Diagnostics"
+    entity_category: diagnostic
+    icon: "mdi:stethoscope"
+    on_press:
+      - esp_audio_stack.dump_diagnostics: i2s_shared
 
 binary_sensor:
   - platform: esp32_touch
@@ -670,6 +752,7 @@ binary_sensor:
     pin: GPIO4
     name: "VOL-"
     icon: mdi:volume-minus
+    entity_category: diagnostic
     disabled_by_default: true
     threshold: 2000 # 1000 to 3000 should be a good value (lower = more sensitive)
     on_press:
@@ -696,6 +779,7 @@ binary_sensor:
     pin: GPIO2
     name: "VOL+"
     icon: mdi:volume-plus
+    entity_category: diagnostic
     disabled_by_default: true
     threshold: 2000 # 1000 to 3000 should be a good value (lower = more sensitive)
     on_press:
@@ -898,8 +982,16 @@ sensor:
     name: "Uptime"
     update_interval: 60s
     disabled_by_default: true
+  - platform: debug
+    loop_time: # longest main loop iteration in the last 60s (debug update_interval), > ~30ms = something blocks
+      name: "Loop Time"
+      disabled_by_default: true
 
+# Internal RAM (not PSRAM) is the bottleneck of the duplex config, see NOTE at the mixer. Watch it in the log: debug logs "Free Heap Size" (internal) on changes, Audio Stack logs "Memory[...]: internal_free=... largest_internal=..." on audio start/stop. Measured values and RAM savings: docs/RESOURCE_INVESTIGATION.md.
+# Periodic values (RAM, PSRAM, CPU per core) and main loop time per component: diagnostics/monitor.yaml.
+# Keep the default update_interval (60s): debug's update walks the internal heap (largest free block) on every update.
 debug:
+
 text_sensor:
   - platform: debug
     reset_reason:
@@ -1252,19 +1344,19 @@ script:
           then:
             - media_player.play_media:
                 id: nabu
-                media_url: "${alarm_sound_url}"
+                media_url: "audio-file://alarm_siren_sound"
             - wait_until:
                 condition:
                   media_player.is_playing:
                     id: nabu
-                timeout: 5s # HTTP stream start
+                timeout: 5s # playback start
             - wait_until:
                 condition:
                   not:
                     media_player.is_playing:
                       id: nabu
                 timeout: 60s
-            - delay: 250ms
+            - delay: 50ms # short gap between repeats (the HA alarm.flac also ends with 1 s of silence)
 
   - id: check_if_timers_active
     then:
@@ -1284,6 +1376,7 @@ switch:
     aec:
       id: aec_switch
       name: "Echo Cancellation"
+      entity_category: diagnostic # off is always worse, for troubleshooting and A/B tests only
       icon: mdi:ear-hearing
       restore_mode: RESTORE_DEFAULT_ON
   # This is the master mute switch. It is exposed to Home Assistant. The user can only turn it on and off if the hardware switch is off. (The hardware switch overrides the software one)
@@ -1324,7 +1417,6 @@ switch:
     name: Use Wake Word
     id: use_wake_word
     icon: mdi:microphone-message
-    entity_category: config
     optimistic: true
     restore_mode: RESTORE_DEFAULT_ON
     on_turn_on:
@@ -1410,7 +1502,7 @@ switch:
       - lambda: id(old_volume_level) = id(nabu).volume;
       - media_player.volume_set:
           id: nabu
-          volume: 1.0
+          volume: !lambda return id(alarm_volume).state / 100.0f; # "Alarm volume", 100% after a reboot
       - script.execute: play_alarm_loop
       - lambda: id(led_state) = "alarm";
       - script.execute: controle_leds

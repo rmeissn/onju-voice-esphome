@@ -1,0 +1,6 @@
+# Mic bug test (docs/AUDIO_INVESTIGATION.md): 32-bit I2S data, so raw_mic holds the whole 32-bit slot of each mic
+# (the SPH0645 drives 18 data bits; where they land shows the RX bit offset of a session). Use with
+# both_slots_raw.yaml. Costs internal RAM: the I2S DMA buffers double (measured 2026-11-15: ~14 kB less free internal RAM). Public PCM stays 16 bit.
+
+esp_audio_stack:
+  bits_per_sample: 32

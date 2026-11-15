@@ -1,0 +1,43 @@
+# Session restart for the mic bug check (docs/AUDIO_INVESTIGATION.md), for onju_duplex_i2s.yaml. Needs
+# diagnostics/audio_capture.yaml too. Include both in the device file; used by tools/mic_check.sh --session.
+# The button rebuilds the Audio Stack session (I2S channels deleted and re-created, capture generation +2) in ~2 s
+# instead of a ~45 s reboot, then records a 2.5 s capture. It stops running playback. The I2S clock settings come
+# from the YAML (rx_clock / rx_data_delay); i2s_clock.h logs the real RX/TX dividers after each restart.
+
+esphome:
+  includes:
+    - diagnostics/i2s_clock.h # logs the real I2S0 clock dividers after each restart (tag i2s_clock)
+
+script:
+  - id: session_test_restart
+    mode: single
+    then:
+      - esp_audio_capture.stop: audio_capture # a capture would end with the new generation anyway
+      - esp_audio_stack.stop: i2s_shared
+      - wait_until:
+          condition:
+            esp_audio_stack.is_idle: i2s_shared
+          timeout: 5s
+      - if:
+          condition:
+            not:
+              esp_audio_stack.is_idle: i2s_shared
+          then:
+            - logger.log:
+                level: WARN
+                format: "Session test: Audio Stack not idle after 5 s, starting anyway"
+      - esp_audio_stack.start: i2s_shared
+      - delay: 1500ms # session up, mic consumers (wake word, AEC) reconnected
+      - lambda: i2s_clock::log_clock();
+      - esp_audio_capture.start: audio_capture
+      - delay: 2500ms
+      - esp_audio_capture.stop: audio_capture
+      - logger.log: "Session test: new session captured"
+
+button:
+  - platform: template
+    name: "Session restart"
+    entity_category: diagnostic
+    icon: "mdi:restart"
+    on_press:
+      - script.execute: session_test_restart

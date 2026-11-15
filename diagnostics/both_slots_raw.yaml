@@ -1,0 +1,8 @@
+# Mic bug test (docs/AUDIO_INVESTIGATION.md): record BOTH I2S slots in raw_mic while the processing still uses only the
+# right mic. Include in the device file after onju_duplex_i2s.yaml, together with audio_capture.yaml.
+# rx_mic_slots: [right, left] + mic_mix: passthrough (default): the AEC takes the first slot (right) only, the RX path
+# is the same single-mic path; only the raw tap gets both slots. raw ch0 = RIGHT, ch1 = LEFT (not left first!).
+# The RX hardware setup is unchanged (stereo, both slots); the dual-mic build allocates a bit more processor buffer.
+
+esp_audio_stack:
+  rx_mic_slots: [right, left]

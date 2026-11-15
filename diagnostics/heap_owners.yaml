@@ -1,0 +1,18 @@
+# Diagnostic build: who owns the internal RAM (per allocating task, size histogram, largest blocks), see
+# diagnostics/onju_monitor.h log_heap_owners() and docs/RESOURCE_INVESTIGATION.md. Needs diagnostics/monitor.yaml:
+#   packages:
+#     - !include onju_duplex_i2s.yaml
+#     - !include diagnostics/monitor.yaml
+#     - !include diagnostics/heap_owners.yaml
+# CONFIG_HEAP_TASK_TRACKING adds a header to every heap block (~8kB less free internal RAM, more CPU) -> only while
+# diagnosing. Run the realistic scenario (music + Assist) and read the output after it (every 60s).
+
+esp32:
+  framework:
+    sdkconfig_options:
+      CONFIG_HEAP_TASK_TRACKING: "y"
+
+interval:
+  - interval: 60s # expensive (heap walk + task snapshot, ~3ms)
+    then:
+      - lambda: onju_monitor::log_heap_owners();

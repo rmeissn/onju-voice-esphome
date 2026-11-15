@@ -10,8 +10,14 @@ substitutions:
 
 packages:
   # choose one of the configs:
-  - !include onju_duplex_i2s.yaml # mic and speaker at the same time, echo cancellation, Assist + Sendspin (not yet tested on the device after the 2026.10 update)
+  - !include onju_duplex_i2s.yaml # mic and speaker at the same time, echo cancellation, Assist + Sendspin (tested on one device, see docs/AUDIO_INVESTIGATION.md)
   # - !include onju_media_player.yaml # media player only (no microphone, no Assist), Sendspin - rock stable
   # - !include onju_single_i2s.yaml # classic: mic and speaker share the bus alternately, ESPHome components only
   - !include wifi.yaml
   - !include ota.yaml
+
+# Optional, saves IRAM: the device log shows "Set flash_chip: <vendor> ... to save IRAM" at boot; enter that vendor here.
+# esp32:
+#   framework:
+#     advanced:
+#       flash_chip: <vendor>

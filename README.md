@@ -8,16 +8,16 @@ Code is inspired by https://github.com/tetele/onju-voice-satellite and https://g
 
 | File | What it is | Status |
 | --- | --- | --- |
-| `onju_duplex_i2s.yaml` | Microphone and speaker run at the same time (full duplex) via [esphome-audio-stack](https://github.com/n-IA-hane/esphome-audio-stack), with software echo cancellation. Voice assistant, wake word (also while music is playing) and music via Music Assistant / Sendspin. | Builds with ESPHome 2026.10, not yet tested on the device after the update to ESPHome 2026.10 / Audio Stack 2026.11. Should work, feedback welcome. |
+| `onju_duplex_i2s.yaml` | Microphone and speaker run at the same time (full duplex) via [esphome-audio-stack](https://github.com/n-IA-hane/esphome-audio-stack), with software echo cancellation. Voice assistant, wake word (also while music is playing) and music via Music Assistant / Sendspin. | Tested on one device with ESPHome 2026.10 / Audio Stack 2026.11 (wake word, Assist, music, wake word during music). The microphone read issue is fixed via two Audio Stack options (fork branch until upstream releases them), see [docs/AUDIO_INVESTIGATION.md](docs/AUDIO_INVESTIGATION.md). Feedback welcome. |
 | `onju_media_player.yaml` | Media player only (no microphone, no voice assistant), with Sendspin. E.g. for speakers that should only play music. | Rock stable, in daily use. |
-| `onju_single_i2s.yaml` | Classic variant with ESPHome components only. Microphone and speaker share the I2S bus alternately, so the microphone is stopped during playback (no wake word while audio is playing, no Sendspin). | Not yet tested after the update to ESPHome 2026.10. |
+| `onju_single_i2s.yaml` | Classic variant with ESPHome components only. Microphone and speaker share the I2S bus alternately, so the microphone is stopped during playback (no wake word while audio is playing). Sendspin is included. | Not yet tested after the update to ESPHome 2026.10. |
 
 `main.yaml` is an example device file that combines one of the configurations with `wifi.yaml` and `ota.yaml`.
 
 ## Requirements
 
 - ESPHome **2026.10.0** or newer (ESP-IDF framework)
-- `onju_duplex_i2s.yaml` uses esphome-audio-stack **v2026.11.0** (pulled automatically as external component)
+- `onju_duplex_i2s.yaml` uses esphome-audio-stack **v2026.11.0** plus the mic fix options `rx_clock` / `rx_data_delay`, from the fork branch `rmeissn/esphome-audio-stack@onju/i2s-clock-source` until an upstream release contains them (pulled automatically as external component)
 - Music Assistant (2.10.7 or newer for the native Sendspin pairing) if you want to use Sendspin
 
 ## Getting started
@@ -31,7 +31,9 @@ Code is inspired by https://github.com/tetele/onju-voice-satellite and https://g
 
 An OTA update only replaces the firmware, **not the partition table**. The device keeps the partition table of the last flash via USB cable. With `flash_size: 16MB`, ESPHome 2026.10 creates two app partitions of about 7.9MB each, and the build output reports the free space based on this table. If your Onju was flashed via cable with an older or smaller layout, the real OTA partitions on the device are smaller and larger builds (e.g. `onju_duplex_i2s.yaml` with about 2.4MB) fail via OTA, although the build says there is plenty of space left.
 
-Fix: flash once via USB cable with the `firmware.factory.bin` from the build output (it contains bootloader, partition table and firmware). Afterwards, OTA updates use the large partitions. Settings stored on the device (volume, switch states, Sendspin pairing) are reset by this; Wi-Fi and API come from the configuration. The partition table of a device is printed in its serial boot log.
+Fix: flash once via USB cable with the factory image (bootloader, partition table and firmware; in the ESPHome Device Builder via Install -> manual download -> factory format, OTA installs don't build it). Afterwards, OTA updates use the large partitions. Settings stored on the device (volume, switch states, Sendspin pairing) are reset by this; Wi-Fi and API come from the configuration. The partition table of a device is printed in its boot log (with the `debug` component also in the normal ESPHome log, look for `Partition table:`).
+
+Without USB, ESPHome 2026.10+ can also migrate the layout via OTA: a small temporary firmware with `ota: allow_partition_access: true`, then an OTA update of the bootloader (the old one may only know 4MB flash) and of the partition table with the `esphome upload --bootloader / --partition-table` CLI. Loss of power during these steps can require a USB recovery. See [docs/PARTITION_MIGRATION.md](docs/PARTITION_MIGRATION.md).
 
 ## Capabilities
 
@@ -83,6 +85,7 @@ In earlier tests, using both microphones as a stereo signal reduced the signal-t
 
 ## Known issues and ideas
 
+* With the two SPH0645 microphones on the shared full-duplex bus, the current esphome-audio-stack release reads the microphone data at a random position per audio session (boot): often one bit late, sometimes slipping (then the wake word and speech recognition fail until the next restart). Cause: the internal I2S receive slave samples too late with its coarse clock. A fix as two new options (`rx_clock: fast`, `rx_data_delay: pos_edge`, ESP32-S3) is tested on one device and offered to esphome-audio-stack as a pull request; until a release contains it, `onju_duplex_i2s.yaml` loads the component from the fork branch. With the fix the level is 6 dB lower, `input_gain: 2.0` restores it.
 * With esphome-audio-stack 2026.7, the wake word detection could stop after a while until the device was restarted (an I2S error permanently stopped the microphone). Since 2026.11 the audio path recovers, but only on the next start request. If this still happens, a wake word watchdog (described in a comment in `onju_duplex_i2s.yaml`) could restart the wake word automatically.
 * The automatic switch-off of a ringing timer (15 min) and of the alarm siren (5 min) uses a delay that isn't cancelled when it is triggered again, so a second timer within that time could be switched off early. A fix is described in a comment in the configurations.
 
@@ -91,17 +94,17 @@ In earlier tests, using both microphones as a stereo signal reduced the signal-t
 This is a list of areas that would improve the Onju from an ESPHome perspective, with their current status.
 
 1. Full duplex I2S bus together with a proper microphone downsampling algorithm
-   - **Implemented in `onju_duplex_i2s.yaml`** (not yet tested on the device after the update to ESPHome 2026.10): esphome-audio-stack owns the shared bus, runs microphone and speaker at the same time and converts the microphone from 48kHz to 16kHz with Espressif's rate converter (instead of taking each third sample, which introduces audible artifacts). The former custom proxy component isn't needed anymore.
+   - **Implemented in `onju_duplex_i2s.yaml`** (tested on one device): esphome-audio-stack owns the shared bus, runs microphone and speaker at the same time and converts the microphone from 48kHz to 16kHz with Espressif's rate converter (instead of taking each third sample, which introduces audible artifacts). The former custom proxy component isn't needed anymore.
    - Native ESPHome (`i2s_audio`) still can't do full duplex on one bus. Since 2026.10 it has a resampler microphone platform, which covers the downsampling part.
 2. Noise Suppression & Auto Gain for the microphone
-   - **Partially:** the voice assistant requests noise suppression and auto gain from the Home Assistant pipeline (`noise_suppression_level`, `auto_gain`). On the device, the duplex configuration only applies echo cancellation (`esp_aec`).
+   - **Partially:** the voice assistant requests noise suppression and auto gain from the Home Assistant pipeline (`noise_suppression_level`, `auto_gain`). Home Assistant up to 2026.11 ignores these settings for ESPHome devices; they are passed on from a later release (home-assistant/core PR #190096). On the device, the duplex configuration only applies echo cancellation (`esp_aec`).
    - On-device noise suppression and auto gain are available with the Espressif AFE (`esp_afe`) of esphome-audio-stack, but not used yet. The microphone on the Onju captures a lot of noise, so this could help with voice commands from more than 2m away. See this link: https://github.com/esphome/issues/issues/6599#issuecomment-3896756251
 3. Support for both microphones to apply Blind Source Separation (BSS) and Multi Input Single Output (MISO) strategies
-   - **Open:** the duplex configuration averages both microphones into one signal, which is neither BSS nor MISO. It is not tested yet whether the old stereo problem (SNR dropping from about 16-20db to 1-2db) still exists.
+   - **Open:** the duplex configuration averages both microphones into one signal, which is neither BSS nor MISO. The old stereo problem (SNR dropping from about 16-20db to 1-2db with native ESPHome) does not occur with the averaging: on the test device it keeps the SNR of a single microphone in a quiet room.
    - esphome-audio-stack supports BSS with both microphones via `esp_afe` (`mic_num: 2`), which replaces `esp_aec` and needs more CPU and memory. MISO isn't offered.
 4. Software based Acoustic Echo Cancellation for enabling to use wake words (like "okay nabu" or "stop") while something is played on the speaker
-   - **Implemented in `onju_duplex_i2s.yaml`** with `esp_aec` (`sr_low_cost`, which preserves the features the wake word model needs). Software AEC isn't as good as a dedicated hardware chip, so the wake word might not trigger every time while loud music is playing.
+   - **Implemented in `onju_duplex_i2s.yaml`** with `esp_aec` (`sr_high_perf`, a speech recognition mode that preserves the features the wake word model needs; it removed clearly more echo than `sr_low_cost` on the test device). Software AEC isn't as good as a dedicated hardware chip, so the wake word might not trigger every time while loud music is playing.
 5. A dedicated "stop" wake word to stop a ringing timer or an announcement
    - **Open:** possible now thanks to echo cancellation, e.g. with the `stop` model that the Voice PE uses.
 6. Fine tuning on the device
-   - Microphone gain, echo cancellation mode and filter length, and wake word sensitivity need to be tuned on the real device.
+   - Microphone gain, echo cancellation mode and filter length, and wake word sensitivity need to be tuned on the real device. The values in the configuration were measured on one device; other units may differ (e.g. which microphone picks up less of the own speaker).

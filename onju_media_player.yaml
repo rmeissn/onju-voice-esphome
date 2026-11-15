@@ -234,7 +234,7 @@ speaker:
     channel: mono
     sample_rate: 48000 # DAC supports 8kHz to 96kHz
     bits_per_sample: 32bit # DAC supports 16/24/32 bit
-    use_apll: true
+    # no use_apll: the ESP32-S3 has no APLL, ESPHome silently ignored it (always PLL 160MHz)
     i2s_mode: primary
     i2s_audio_id: i2s_speaker
     i2s_dout_pin: GPIO12 # SDO / Din

@@ -4,3 +4,12 @@ grey.yaml
 black.yaml
 black2.yaml
 Changelogs
+# PCM captures of tools/capture_audio.py
+captures/
+*_migration.yaml
+
+# Local only (user, 2026-11-15): agent notes, task list, issue drafts, reference copy of the Voice PE config
+CLAUDE.md
+TODO.md
+issues/
+home-assistant-voice.yaml
