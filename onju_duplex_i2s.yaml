@@ -673,12 +673,19 @@ voice_assistant: # need to use a 16khz due to mww
         id: media_spk_mixer_input
         decibel_reduction: 20
         duration: 0.5s
-  on_tts_start: # fallback if no VAD end event was sent (e.g. speech ended by timeout)
-    - mixer_speaker.apply_ducking:
+  # Reply LED when the reply starts (as in the Voice PE): a streamed reply starts playing with intent progress (x = TTS URL), on_tts_start is the fallback
+  on_intent_progress:
+    - if:
+        condition:
+          lambda: return !x.empty();
+        then:
+          - lambda: id(led_state) = "replying";
+          - script.execute: controle_leds
+  on_tts_start:
+    - mixer_speaker.apply_ducking: # fallback if no VAD end event was sent (e.g. speech ended by timeout)
         id: media_spk_mixer_input
         decibel_reduction: 20
         duration: 0.5s
-  on_tts_end:
     - lambda: id(led_state) = "replying";
     - script.execute: controle_leds
   on_idle:
@@ -989,7 +996,7 @@ binary_sensor:
                     speaker.is_playing:
                       id: announcement_spk_resampling_input
                 timeout: 3s
-            - script.execute: turn_off_wake_word
+      # runs after the mute sound (if then waits) and also when the software mute was already on
       - script.execute: turn_off_wake_word
     on_release:
       - media_player.play_media:
