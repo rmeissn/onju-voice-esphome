@@ -50,10 +50,9 @@ Without USB, ESPHome 2026.10+ can also migrate the layout via OTA: a small tempo
 * Play/Pause, stop timer ringing, stop announcements and start the voice assistant via the top action button
 * Soft reset via long press on the top action button, double/triple/long press events for automations in Home Assistant
 * LED feedback for all states, including a (switchable) connection error indicator
+* A dedicated stop word to stop a ringing timer (like voice pe)
 
 What is currently missing (in comparison to the Voice PE):
-
-* A dedicated stop word to stop a ringing timer (the wake word works while ringing, though)
 * Visual timer "time elapsed" feedback - too few LEDs
 * Hardware echo cancellation - the software echo cancellation of the Onju isn't as good as a dedicated chip, so triggering the wake word while loud music is playing might not work each and every time
 

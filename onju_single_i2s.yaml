@@ -262,6 +262,27 @@ number:
             - media_player.volume_set:
                 id: nabu
                 volume: !lambda return x / 100.0f;
+  # Volume of a ringing timer (media player volume while it rings). Kept over reboots and flashes.
+  - platform: template
+    name: "Timer volume"
+    id: timer_volume
+    icon: mdi:timer-music
+    entity_category: config
+    unit_of_measurement: "%"
+    min_value: 10
+    max_value: 100
+    step: 5
+    initial_value: 70
+    restore_value: true
+    optimistic: true
+    on_value:
+      - if:
+          condition:
+            switch.is_on: timer_ringing
+          then:
+            - media_player.volume_set:
+                id: nabu
+                volume: !lambda return x / 100.0f;
 
 select:
   - platform: template
@@ -1220,7 +1241,7 @@ script:
       - lambda: id(old_volume_level) = id(nabu).volume;
       - media_player.volume_set:
           id: nabu
-          volume: 70%
+          volume: !lambda return id(timer_volume).state / 100.0f; # "Timer volume", default 70%
       - script.execute: repeating_ringing_timer
       - lambda: id(led_state) = "timer_ringing";
       - script.execute: controle_leds

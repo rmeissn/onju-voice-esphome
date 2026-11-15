@@ -247,46 +247,63 @@ micro_wake_word: # requires 16khz input currently
   models:
     - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
       id: okay_nabu
+    # "stop" (as in the Voice PE): internal, disabled after boot (only the first model is enabled by default), enabled only while a timer rings (timer_ringing). Disabled models are unloaded (no CPU/RAM).
+    - model: https://github.com/kahrendt/microWakeWord/releases/download/stop/stop.json
+      id: stop
+      internal: true
   vad:
   on_wake_word_detected:
     - if:
         condition:
           - switch.is_on: use_wake_word # ignore detection if switch is off
         then:
-          # Duck the music now, not in on_start: otherwise up to 150ms of undimmed music (onju_out buffer) reach the STT
-          - mixer_speaker.apply_ducking:
-              id: media_spk_mixer_input
-              decibel_reduction: 255
-              duration: 0.2s
-          - media_player.play_media:
-              id: nabu
-              media_url: "audio-file://wakeup"
-              announcement: true
-          # wait for the announcement path (not the hardware speaker, which keeps playing while music runs)
-          - wait_until:
-              condition:
-                speaker.is_playing:
-                  id: announcement_spk_resampling_input
-              timeout: 2s
-          # Start listening near the end of the sound's audible part instead of after the whole playback: users start
-          # talking when they hear the end (AEC removes the tail). docs/AUDIO_INVESTIGATION.md
-          - delay: ${wake_listen_delay}
-          - voice_assistant.start:
-              wake_word: !lambda return wake_word;
-          # Unduck if the voice assistant did not start (e.g. API not connected), otherwise on_end does it
-          - wait_until:
-              condition: voice_assistant.is_running
-              timeout: 2s
           - if:
               condition:
-                and:
-                  - not: voice_assistant.is_running
-                  - switch.is_off: timer_ringing
+                switch.is_on: timer_ringing
               then:
+                # A ringing timer: any wake word ("stop" or "Okay Nabu") stops it, no Assist (like the Voice PE)
+                - switch.turn_off: timer_ringing
+                # stop_after_detection (default) stopped the wake word: restart it
+                - wait_until:
+                    condition:
+                      not: micro_wake_word.is_running
+                    timeout: 2s
+                - micro_wake_word.start
+              else:
+                # Duck the music now, not in on_start: otherwise up to 150ms of undimmed music (onju_out buffer) reach the STT
                 - mixer_speaker.apply_ducking:
                     id: media_spk_mixer_input
-                    decibel_reduction: 0
-                    duration: 1.0s
+                    decibel_reduction: 255
+                    duration: 0.2s
+                - media_player.play_media:
+                    id: nabu
+                    media_url: "audio-file://wakeup"
+                    announcement: true
+                # wait for the announcement path (not the hardware speaker, which keeps playing while music runs)
+                - wait_until:
+                    condition:
+                      speaker.is_playing:
+                        id: announcement_spk_resampling_input
+                    timeout: 2s
+                # Start listening near the end of the sound's audible part instead of after the whole playback: users start
+                # talking when they hear the end (AEC removes the tail). docs/AUDIO_INVESTIGATION.md
+                - delay: ${wake_listen_delay}
+                - voice_assistant.start:
+                    wake_word: !lambda return wake_word;
+                # Unduck if the voice assistant did not start (e.g. API not connected), otherwise on_end does it
+                - wait_until:
+                    condition: voice_assistant.is_running
+                    timeout: 2s
+                - if:
+                    condition:
+                      and:
+                        - not: voice_assistant.is_running
+                        - switch.is_off: timer_ringing
+                    then:
+                      - mixer_speaker.apply_ducking:
+                          id: media_spk_mixer_input
+                          decibel_reduction: 0
+                          duration: 1.0s
 
 number:
   # NOTE no master_volume number: Audio Stack then keeps its master volume at 100%, so the media player volume
@@ -316,6 +333,27 @@ number:
       - if:
           condition:
             switch.is_on: alarm_siren
+          then:
+            - media_player.volume_set:
+                id: nabu
+                volume: !lambda return x / 100.0f;
+  # Volume of a ringing timer (media player volume while it rings). Kept over reboots and flashes.
+  - platform: template
+    name: "Timer volume"
+    id: timer_volume
+    icon: mdi:timer-music
+    entity_category: config
+    unit_of_measurement: "%"
+    min_value: 10
+    max_value: 100
+    step: 5
+    initial_value: 70
+    restore_value: true
+    optimistic: true
+    on_value:
+      - if:
+          condition:
+            switch.is_on: timer_ringing
           then:
             - media_player.volume_set:
                 id: nabu
@@ -1308,7 +1346,7 @@ script:
       - lambda: id(old_volume_level) = id(nabu).volume;
       - media_player.volume_set:
           id: nabu
-          volume: 70%
+          volume: !lambda return id(timer_volume).state / 100.0f; # "Timer volume", default 70%
       - script.execute: repeating_ringing_timer
       - lambda: id(led_state) = "timer_ringing";
       - script.execute: controle_leds
@@ -1451,6 +1489,7 @@ switch:
     internal: true
     restore_mode: ALWAYS_OFF
     on_turn_off:
+      - micro_wake_word.disable_model: stop
       # Stop any current annoucement (ie: stop the timer ring mid playback)
       - if:
           condition:
@@ -1477,6 +1516,8 @@ switch:
           id: media_spk_mixer_input
           decibel_reduction: 30
           duration: 0.0s
+      # "stop" stops the ringing timer (on_wake_word_detected)
+      - micro_wake_word.enable_model: stop
       # Ring timer
       - script.execute: ring_timer
       - lambda: id(led_state) = "timer_ringing";
