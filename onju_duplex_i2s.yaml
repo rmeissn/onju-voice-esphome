@@ -10,8 +10,6 @@ substitutions:
   timer_finished_sound_url: "http://192.168.0.202:8123/local/timer_finished.flac" # New Notification #6 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734445/
   mute_sound_url: "http://192.168.0.202:8123/local/mute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_disconnected.flac
   unmute_sound_url: "http://192.168.0.202:8123/local/unmute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_connected.flac
-  knock_sound_url: "http://192.168.0.202:8123/local/knock.flac" # https://freesound.org/people/UberBosser/sounds/421585/
-  click_sound_url: "http://192.168.0.202:8123/local/tongue-click.flac" # https://freesound.org/people/MichellePamelaLyons/sounds/135515/
   alarm_sound_url: "http://192.168.0.202:8123/local/alarm.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
   # Delay from the wake sound start (announcement path playing) to voice_assistant.start: near the end of the sound's audible part (450ms for the 550/745ms sound; set it with a shorter wakeup_sound_url). docs/AUDIO_INVESTIGATION.md
   wake_listen_delay: 450ms
@@ -213,7 +211,7 @@ interval:
                               ]
                         - if:
                             condition:
-                              lambda: return id(show_connection_error_led_switch).state;
+                              lambda: return id(show_connection_error_led_switch).state && !id(alarm_siren).state; # keep the siren's strobe LED
                             then:
                               - lambda: id(led_state) = "connection_error";
                               - script.execute: controle_leds
@@ -501,14 +499,14 @@ media_source:
     task_stack_in_psram: true # decoder task, see NOTE at the mixer
   - platform: audio_http # TTS responses, announcements from HA
     id: http_announcement_source
-    buffer_size: 65536 # von 250KB auf 64KB reduziert für sofortigen Durchsage-Start (same as onju_media_player.yaml)
+    buffer_size: 65536 # reduced from 250KB to 64KB for an immediate announcement start
     task_stack_in_psram: true # decoder task, see NOTE at the mixer
   - platform: audio_file # on-device files on the media pipeline (the alarm siren)
     id: audio_file_media_source
     task_stack_in_psram: true # decoder task, see NOTE at the mixer
   - platform: audio_http # media from HA / URLs
     id: http_media_source
-    buffer_size: 131072 # von 500KB auf 128KB reduziert für <1s Stream-Start (same as onju_media_player.yaml)
+    buffer_size: 131072 # reduced from 500KB to 128KB for a stream start below 1s
     task_stack_in_psram: true # decoder task, see NOTE at the mixer
   - platform: sendspin
     id: sendspin_media_source
@@ -855,6 +853,7 @@ binary_sensor:
           - ON for at most 1s
           - OFF for at least 0.5s
         then:
+          # NOTE the alarm siren deliberately cannot be stopped with the button (too easy for an intruder)
           - if:
               condition:
                 switch.is_on: timer_ringing
@@ -1392,14 +1391,21 @@ script:
                 media_url: "audio-file://alarm_siren_sound"
             - wait_until:
                 condition:
-                  media_player.is_playing:
-                    id: nabu
+                  or:
+                    - media_player.is_playing:
+                        id: nabu
+                    - media_player.is_announcing:
+                        id: nabu
                 timeout: 5s # playback start
+            # an HA announcement during the siren reports ANNOUNCING, not PLAYING: wait for both to end
             - wait_until:
                 condition:
                   not:
-                    media_player.is_playing:
-                      id: nabu
+                    or:
+                      - media_player.is_playing:
+                          id: nabu
+                      - media_player.is_announcing:
+                          id: nabu
                 timeout: 60s
             - delay: 50ms # short gap between repeats (the HA alarm.flac also ends with 1 s of silence)
 
@@ -1560,13 +1566,10 @@ switch:
       - delay: 5min
       - switch.turn_off: alarm_siren
     on_turn_off:
-      - if:
-          condition:
-            media_player.is_playing:
-              id: nabu
-          then:
-            media_player.stop:
-              id: nabu
+      # stop the loop first, then the siren unconditionally (not PLAYING during an announcement or right after play_media)
+      - script.stop: play_alarm_loop
+      - media_player.stop:
+          id: nabu
       - media_player.volume_set:
           id: nabu
           volume: !lambda return id(old_volume_level);

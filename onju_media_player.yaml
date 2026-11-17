@@ -1,4 +1,4 @@
-# NOTE: Works ok, but is slow due the need to change the i2s direction and usage between speaker and microphone
+# NOTE: Media player only (no microphone, no Assist): rock stable, native ESPHome i2s_audio, Sendspin
 
 substitutions:
   name: "onju-voice"
@@ -6,11 +6,8 @@ substitutions:
   project_version: "1.2.0"
   device_description: "Common code for the onju voice, to be included in all onju voice devices"
   ha_base_url: "http://192.168.0.202:8123"
-  error_sound_url: "${ha_base_url}/local/error.flac" # Error #8 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734442/
   mute_sound_url: "${ha_base_url}/local/mute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_disconnected.flac
   unmute_sound_url: "${ha_base_url}/local/unmute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_connected.flac
-  knock_sound_url: "${ha_base_url}/local/knock.flac" # https://freesound.org/people/UberBosser/sounds/421585/
-  click_sound_url: "${ha_base_url}/local/tongue-click.flac" # https://freesound.org/people/MichellePamelaLyons/sounds/135515/
   alarm_sound_url: "${ha_base_url}/local/alarm.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
 
@@ -75,10 +72,6 @@ esp32:
       #CONFIG_SPIRAM_RODATA: "y"
       #CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
       CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "4096"
-      CONFIG_SPIRAM_TRY_ALLOCATE_BF_WITH_ESP_ERR: "y"
-
-      CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
-      CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
 
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
       CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y"
@@ -86,12 +79,12 @@ esp32:
       CONFIG_ESP_WIFI_EXTRA_IRAM_OPT: "y"
 
       # CONFIG_COMPILER_OPTIMIZATION_PERF: "y"
-      # CONFIG_FREERTOS_HZ: "1000"             # 1ms FreeRTOS Tick-Rate, testen
+      # CONFIG_FREERTOS_HZ: "1000"             # 1ms FreeRTOS tick rate, to be tested
 
 psram:
   mode: octal
   speed: 80MHz
-  ignore_not_found: false # The VPE has PSRAM, so this is safe. Allows configuring WiFi driver to use more resources (done automatically by the speaker media player)
+  ignore_not_found: false # The Onju has PSRAM (8MB octal), so this is safe. Allows configuring WiFi driver to use more resources (done automatically by the speaker media player)
 
 # Enable logging
 logger:
@@ -104,29 +97,36 @@ logger:
 wifi:
   id: wifi_id
   ssid: to_be_overwritten
-  # on_connect:
-  #   - delay: 5s # Give time for Improv BLE result transmission
-  #   - ble.disable:
-  #   - lambda: id(improv_ble_in_progress) = false;
-  #   - script.execute: controle_leds
-  # on_disconnect:
-  #   - ble.enable:
-  #   - script.execute: controle_leds
+  on_connect:
+    - lambda: id(improv_ble_in_progress) = false;
+    - script.execute: controle_leds
+    - script.stop: ble_enable_delayed
+    - delay: 5s # gives time for the Improv result to be transmitted (as in the Voice PE)
+    - if: # a disconnect within these 5s must not leave BLE off
+        condition:
+          wifi.connected:
+        then:
+          - ble.disable:
+  on_disconnect:
+    - script.execute: ble_enable_delayed # Improv BLE available again while WiFi stays lost
 
-# esp32_ble:
-#   name: "${friendly_name}"
+# Improv via BLE (like the Voice PE factory firmware): WiFi setup from the HA app / improv-wifi.com.
+# Starts only after 90s without WiFi (improv_ble wifi_timeout, same time as the fallback AP); BLE is disabled 5s after
+# connecting and re-enabled after 60s without WiFi (not on short dropouts). The center touch button authorizes the setup.
+esp32_ble:
+  use_psram: true # BLE stack memory in PSRAM where possible
 
-# esp32_improv:
-#   authorizer: action # Uses center touch button to authorize provisioning if needed
-#   on_start:
-#     - lambda: id(improv_ble_in_progress) = true;
-#     - script.execute: controle_leds
-#   on_provisioned:
-#     - lambda: id(improv_ble_in_progress) = false;
-#     - script.execute: controle_leds
-#   on_stop:
-#     - lambda: id(improv_ble_in_progress) = false;
-#     - script.execute: controle_leds
+improv_ble: # formerly esp32_improv (alias removed in ESPHome 2027.4.0)
+  authorizer: action # center touch button
+  on_start:
+    - lambda: id(improv_ble_in_progress) = true;
+    - script.execute: controle_leds
+  on_provisioned:
+    - lambda: id(improv_ble_in_progress) = false;
+    - script.execute: controle_leds
+  on_stop:
+    - lambda: id(improv_ble_in_progress) = false;
+    - script.execute: controle_leds
 
 captive_portal:
 
@@ -156,7 +156,7 @@ globals:
     type: int
     restore_value: no
     initial_value: "0"
-  - id: improv_ble_in_progress
+  - id: improv_ble_in_progress # Improv BLE setup running, shown by the LEDs
     type: bool
     restore_value: no
     initial_value: "false"
@@ -208,7 +208,7 @@ interval:
                               ]
                         - if:
                             condition:
-                              lambda: return id(show_connection_error_led_switch).state;
+                              lambda: return id(show_connection_error_led_switch).state && !id(alarm_siren).state; # keep the siren's strobe LED
                             then:
                               - lambda: id(led_state) = "connection_error";
                               - script.execute: controle_leds
@@ -269,25 +269,26 @@ sendspin:
   id: sendspin_hub
   task_stack_in_psram: false
 
+# On-device sounds, played via media_url "audio-file://<id>"
 audio_file:
-  - id: error
-    file: ${error_sound_url}
   - id: mute
     file: ${mute_sound_url}
   - id: unmute
     file: ${unmute_sound_url}
-  # - id: alarm_sound # too large for the default onju partition
-  #   file: ${alarm_sound_url}
+  - id: alarm_siren_sound # on-device, so the siren also works without HA; needs the 16MB partition table (docs/PARTITION_MIGRATION.md)
+    file: ${alarm_sound_url}
 
 media_source:
   - platform: audio_file
     id: audio_file_announcement_source
+  - platform: audio_file # on-device files on the media pipeline (the alarm siren)
+    id: audio_file_media_source
   - platform: audio_http
     id: http_announcement_source
-    buffer_size: 65536 # von 250KB auf 64KB reduziert für sofortigen Durchsage-Start
+    buffer_size: 65536 # reduced from 250KB to 64KB for an immediate announcement start
   - platform: audio_http
     id: http_media_source
-    buffer_size: 131072 # von 500KB auf 128KB reduziert für <1s Stream-Start
+    buffer_size: 131072 # reduced from 500KB to 128KB for a stream start below 1s
   - platform: sendspin
     id: sendspin_media_source
     decode_memory: internal
@@ -313,6 +314,7 @@ media_player:
       sample_rate: 48000
       speaker: media_resampling_speaker
       sources:
+        - audio_file_media_source
         - http_media_source
         - sendspin_media_source
     volume_increment: 0.05
@@ -409,6 +411,7 @@ binary_sensor:
     pin: GPIO4
     name: "VOL-"
     icon: mdi:volume-minus
+    entity_category: diagnostic
     disabled_by_default: true
     threshold: 2000 # 1000 to 3000 should be a good value (lower = more sensitive)
     on_press:
@@ -435,6 +438,7 @@ binary_sensor:
     pin: GPIO2
     name: "VOL+"
     icon: mdi:volume-plus
+    entity_category: diagnostic
     disabled_by_default: true
     threshold: 2000 # 1000 to 3000 should be a good value (lower = more sensitive)
     on_press:
@@ -465,6 +469,7 @@ binary_sensor:
           - ON for at most 1s
           - OFF for at least 0.5s
         then:
+          # NOTE the alarm siren deliberately cannot be stopped with the button (too easy for an intruder)
           - if: # switch between pause/play
               condition:
                 or:
@@ -514,11 +519,12 @@ binary_sensor:
                   speaker.is_playing:
                     id: i2s_audio_speaker
               timeout: 3s
-          - lambda: id(led_state) = "idle";
+          - if: # the siren keeps ringing (its loop restarts it): keep its strobe LED
+              condition:
+                switch.is_off: alarm_siren
+              then:
+                - lambda: id(led_state) = "idle";
           - script.execute: controle_leds
-          - event.trigger:
-              id: button_press_event
-              event_type: "long_press"
       - timing: # long press
           - ON for 1s to 3s
           - OFF for at least 0.25s
@@ -583,6 +589,29 @@ sensor:
     name: "Uptime"
     update_interval: 60s
     disabled_by_default: true
+
+number:
+  # Volume of the alarm siren (media player volume while it rings).
+  - platform: template
+    name: "Alarm volume"
+    id: alarm_volume
+    icon: mdi:volume-high
+    entity_category: config
+    unit_of_measurement: "%"
+    min_value: 10
+    max_value: 100
+    step: 5
+    initial_value: 100
+    restore_value: false
+    optimistic: true
+    on_value:
+      - if:
+          condition:
+            switch.is_on: alarm_siren
+          then:
+            - media_player.volume_set:
+                id: external_media_player
+                volume: !lambda return x / 100.0f;
 
 debug:
 text_sensor:
@@ -677,15 +706,28 @@ light:
     default_transition_length: 100ms
 
 script:
+  # Re-enables BLE for Improv only if WiFi stays lost (no BLE stack setup/teardown on every roam or short dropout)
+  - id: ble_enable_delayed
+    mode: restart
+    then:
+      - delay: 60s
+      - if:
+          condition:
+            not:
+              wifi.connected:
+          then:
+            - ble.enable:
+
   - id: controle_leds
     then:
       - if:
           condition:
             lambda: return id(booted);
           then:
+            # Improv BLE setup wins over the other states (WiFi is down then, so connection_error is active too), except the alarm
             - if:
                 condition:
-                  lambda: return id(improv_ble_in_progress);
+                  lambda: return id(improv_ble_in_progress) && id(led_state) != "alarm";
                 then:
                   - light.turn_on:
                       id: top_led
@@ -693,51 +735,52 @@ script:
                       green: 89%
                       blue: 71%
                       effect: pulse
-            - if:
-                condition:
-                  lambda: return id(led_state) == "idle";
-                then:
+                else:
                   - if:
                       condition:
-                        switch.is_on: master_mute_switch
+                        lambda: return id(led_state) == "idle";
+                      then:
+                        - if:
+                            condition:
+                              switch.is_on: master_mute_switch
+                            then:
+                              - light.turn_on:
+                                  id: top_led
+                                  red: 100%
+                                  green: 0%
+                                  blue: 5%
+                                  brightness: 30%
+                                  effect: "none"
+                            else:
+                              - light.turn_off:
+                                  id: top_led
+                  - if:
+                      condition:
+                        lambda: return id(led_state) == "error";
+                      then:
+                        - light.turn_on:
+                            id: top_led
+                            blue: 0%
+                            red: 100%
+                            green: 0%
+                            effect: none
+                  - if:
+                      condition:
+                        lambda: return id(led_state) == "connection_error";
                       then:
                         - light.turn_on:
                             id: top_led
                             red: 100%
                             green: 0%
-                            blue: 5%
-                            brightness: 30%
-                            effect: "none"
-                      else:
-                        - light.turn_off:
+                            blue: 0%
+                            effect: pulse
+                  - if:
+                      condition:
+                        lambda: return id(led_state) == "alarm";
+                      then:
+                        - light.turn_on:
                             id: top_led
-            - if:
-                condition:
-                  lambda: return id(led_state) == "error";
-                then:
-                  - light.turn_on:
-                      id: top_led
-                      blue: 0%
-                      red: 100%
-                      green: 0%
-                      effect: none
-            - if:
-                condition:
-                  lambda: return id(led_state) == "connection_error";
-                then:
-                  - light.turn_on:
-                      id: top_led
-                      red: 100%
-                      green: 0%
-                      blue: 0%
-                      effect: pulse
-            - if:
-                condition:
-                  lambda: return id(led_state) == "alarm";
-                then:
-                  - light.turn_on:
-                      id: top_led
-                      effect: alarm_strobe
+                            effect: alarm_strobe
 
   - id: set_volume
     mode: restart
@@ -771,28 +814,32 @@ script:
           then:
             - media_player.play_media:
                 id: external_media_player
-                media_url: "${alarm_sound_url}"
+                media_url: "audio-file://alarm_siren_sound"
             - wait_until:
                 condition:
-                  media_player.is_idle:
-                    id: external_media_player
-                timeout: 5s
-            # - wait_until:
-            #     condition:
-            #       media_player.is_playing:
-            #         id: external_media_player
-            #     timeout: 2s
-            # - wait_until:
-            #     condition:
-            #       not:
-            #         media_player.is_playing:
-            #           id: external_media_player
-            #     timeout: 5s
-            - delay: 250ms
+                  or:
+                    - media_player.is_playing:
+                        id: external_media_player
+                    - media_player.is_announcing:
+                        id: external_media_player
+                timeout: 5s # playback start
+            # an HA announcement during the siren reports ANNOUNCING, not PLAYING: wait for both to end
+            - wait_until:
+                condition:
+                  not:
+                    or:
+                      - media_player.is_playing:
+                          id: external_media_player
+                      - media_player.is_announcing:
+                          id: external_media_player
+                timeout: 60s
+            - delay: 50ms # short gap between repeats (the HA alarm.flac also ends with 1 s of silence)
 
 switch:
-  # This is the master mute switch. It is exposed to Home Assistant. The user can only turn it on and off if the hardware switch is off. (The hardware switch overrides the software one)
+  # This is the master mute switch. The user can only turn it on and off if the hardware switch is off. (The hardware switch overrides the software one)
+  # Internal here: no microphone in this config, the lambda only mirrors the hardware switch (an HA toggle would snap back), it only drives the mute LED.
   - platform: template
+    internal: true
     id: master_mute_switch
     restore_mode: RESTORE_DEFAULT_OFF
     icon: "mdi:microphone-off"
@@ -826,27 +873,27 @@ switch:
     icon: mdi:alarm-light
     entity_category: ""
     optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: ALWAYS_OFF # never restart the siren after a reboot/power loss
     on_turn_on:
       # Save volume
       - lambda: id(old_volume_level) = id(external_media_player).volume;
       - media_player.volume_set:
           id: external_media_player
-          volume: 1.0
+          volume: !lambda return id(alarm_volume).state / 100.0f; # "Alarm volume", 100% after a reboot
       - script.execute: play_alarm_loop
       - lambda: id(led_state) = "alarm";
       - script.execute: controle_leds
       # Timeout 5 minutes
+      # TODO known issue: re-triggering does not cancel a pending delay (each turn_on runs in parallel). If the siren is
+      # turned on again within 5min, the first run's delay turns the new one off early.
+      # Fix: move delay + turn_off into a script with mode: restart, execute it here and stop it in on_turn_off.
       - delay: 5min
       - switch.turn_off: alarm_siren
     on_turn_off:
-      - if:
-          condition:
-            media_player.is_playing:
-              id: external_media_player
-          then:
-            media_player.stop:
-              id: external_media_player
+      # stop the loop first, then the siren unconditionally (not PLAYING during an announcement or right after play_media)
+      - script.stop: play_alarm_loop
+      - media_player.stop:
+          id: external_media_player
       - media_player.volume_set:
           id: external_media_player
           volume: !lambda return id(old_volume_level);
