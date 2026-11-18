@@ -422,11 +422,12 @@ esp_aec:
   #   sr_low_cost  - recommended starting point for VA + MWW
   #   sr_high_perf - higher-cost SR/FFT variant, needs a large contiguous DMA-capable internal heap block (rejected at runtime if missing)
   # fd_low_cost/fd_high_perf and voip_low_cost/voip_high_perf add residual echo suppression (better for calls, may hurt wake word detection)
-  # sr_high_perf removed 15-30 / 11-22 dB echo below 3 kHz (sr_low_cost 8-9 / 8), talker intact (<= 1 dB), wake word better after the AEC, less core0 load and more free internal RAM. docs/AUDIO_INVESTIGATION.md
+  # The echo delay this AEC sees varies per music start (~50-160 ms on the Onju): only filter_length 8 covers it.
+  # sr_high_perf + 8: 27-45 dB echo removed at every delay (4: nothing above ~100 ms); needs an 80 kB contiguous DMA block at boot.
+  # Fallbacks if it fails to start or core0/RAM get too tight: docs/ECHO_CANCELLATION.md
   mode: sr_high_perf
-  filter_length: 4 # ESP-SR echo filter length (1-8, not ms): higher tracks longer echo tails but costs more CPU/RAM
-  # 4: stable, core0 ~11% idle. 8: ~3.7dB less residual echo below 1kHz, but core0 ~50% idle / ~60-75% with music and ~13kB more internal RAM. 6: BROKEN (no audio, heap corruption; https://github.com/n-IA-hane/esphome-audio-stack/issues/18).
-  # Details: docs/AUDIO_INVESTIGATION.md "AEC filter length".
+  filter_length: 8 # ESP-SR echo filter length (1-8, not ms): higher tracks longer echo tails but costs more CPU/RAM
+  # 6: BROKEN (no audio, heap corruption; https://github.com/n-IA-hane/esphome-audio-stack/issues/18).
 
 speaker:
   # Hardware speaker output

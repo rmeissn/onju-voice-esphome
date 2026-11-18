@@ -112,13 +112,21 @@ def stream_layout(manifest: dict) -> dict:
     cycle = max(cycles)
     if len(cycles) > 1:
         print(f"WARNING record durations differ ({sorted(cycles)} s), stream alignment may be wrong")
-    latest = max(t0.values())
+    # Anchor on the first tap of each audio cycle (raw_mic; POINTS is in tap order). The later taps of the same
+    # cycle come 0..~15 ms after it (processor_output/output wait for the AEC, longer with filter_length 8), so
+    # the start cycle of each stream is floor(offset + 0.2): a fraction in [-0.2, 0.8) is the intra-cycle delay.
+    anchor = next(p for p in POINTS if p in t0)
+    start = {}
+    for p in t0:
+        x = (t0[p] - t0[anchor]) / cycle
+        start[p] = int(np.floor(x + 0.2))
+        if not -0.15 <= x - start[p] <= 0.7:
+            print(f"WARNING {p}: start offset {x:.2f} blocks vs {anchor} is ambiguous, alignment may be off by one block")
+    latest = max(start.values())
     layout = {}
     for p, rs in recs.items():
         rate = rs[0]["rate"]
-        k = (latest - t0[p]) / cycle
-        if abs(k - round(k)) > 0.25:
-            print(f"WARNING {p}: start offset {k:.2f} blocks is ambiguous, alignment may be off by one block")
+        k = latest - start[p]
         gaps, end = [], 0
         for r in rs:
             if r["position"] > end:
@@ -168,6 +176,7 @@ def to_fs(valid: np.ndarray, rate: int) -> np.ndarray:
 
 
 RIGHT_FIRST = False  # --right-first: raw_mic is [right, left]
+DEVICE_PATH = None  # --device-path: force the processed mic option instead of detecting it
 PHASE_PERIODS = (2, 3, 4)
 PHASE_MIN_LSB = 5.0  # healthy captures: < 0.5 LSB; corrupted period-3 captures: 50..1900 LSB
 PHASE_MIN_Z = 10.0
@@ -313,12 +322,21 @@ def detect_option(pin: np.ndarray, mics: dict, valid: np.ndarray) -> tuple:
     """Which mic option the device processes. Two mics: least-squares fit processor_input = a*left + b*right
     (a matching of single options fails: the left mic picks up the own speaker ~20 dB louder, so "left" and
     "avg" explain nearly the same energy). Lag search +-32 samples (the device resampler has its own delay).
-    Returns (name or None, gain vs that option, residual dB, lag, (a, b))."""
+    Returns (name or None, gain vs that option, residual dB, lag, (a, b)).
+    --device-path forces the option (for units whose mics pick up the same echo: with music the fit is then
+    ill-conditioned, e.g. weights 1.63 / 0.38 for a device that averages)."""
     ref_sig = mics.get("avg", next(iter(mics.values())))
     c = signal.correlate(pin * valid, ref_sig * valid, mode="full", method="fft")
     mid = len(ref_sig) - 1
     lag = int(np.argmax(np.abs(c[mid - 32 : mid + 33]))) - 32
     pv = pin[valid]
+    if DEVICE_PATH:
+        if DEVICE_PATH not in mics:
+            raise SystemExit(f"--device-path {DEVICE_PATH}: not in this capture ({', '.join(mics)})")
+        xs = np.roll(mics[DEVICE_PATH], lag)[valid]
+        g = float(np.dot(pv, xs) / max(np.dot(xs, xs), 1e-30))
+        res = float(db(np.sum((pv - g * xs) ** 2) / max(np.sum(pv**2), 1e-30)))
+        return (DEVICE_PATH, g, res, lag, (g,))
     if "left" in mics and "right" in mics:
         x = np.stack([np.roll(mics["left"], lag)[valid], np.roll(mics["right"], lag)[valid]], axis=1)
         (a, b), *_ = np.linalg.lstsq(x, pv, rcond=None)
@@ -656,9 +674,13 @@ def main() -> None:
                     help="compare the playback part of every run with the first run (music aligned via the reference)")
     ap.add_argument("--right-first", action="store_true",
                     help="raw_mic channel 0 is the right mic (rx_mic_slots: [right, left], diagnostics/both_slots_raw.yaml)")
+    ap.add_argument("--device-path", choices=["left", "right", "avg"],
+                    help="skip the automatic detection of the processed mic option (use it when both mics pick up "
+                         "the same echo and the detection says 'device path unknown')")
     args = ap.parse_args()
-    global RIGHT_FIRST
+    global RIGHT_FIRST, DEVICE_PATH
     RIGHT_FIRST = args.right_first
+    DEVICE_PATH = args.device_path
     print(f"bands {BANDS} Hz; levels in dBFS, ratios in dB")
     data = []
     for run in args.runs:

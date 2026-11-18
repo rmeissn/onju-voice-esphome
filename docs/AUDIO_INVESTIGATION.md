@@ -2,7 +2,7 @@
 
 Measurements of the Onju microphones, AEC, levels and Assist behaviour with `onju_duplex_i2s.yaml` (Audio Stack, `esp_aec`). CPU and RAM: `RESOURCE_INVESTIGATION.md`.
 
-> **Everything here was measured on a single device.** The mechanisms (mic read bug, AEC, HA processing) apply to every Onju, but the numbers can differ per unit. This holds especially for the **mic choice**: which mic picks up the own speaker more, or whether a mic is dull or damaged, depends on the individual board and its assembly. On another unit averaging or the left mic may be the better choice, so measure each device (see "Quick check of other devices") instead of copying the test device's choice.
+> **Unless a second unit is mentioned, everything here was measured on a single device.** The mechanisms (mic read bug, AEC, HA processing) apply to every Onju, but the numbers can differ per unit. This holds especially for the **mic choice**: which mic picks up the own speaker more, or whether a mic is dull or damaged, depends on the individual board and its assembly. On another unit averaging or the left mic may be the better choice, so measure each device (see "Quick check of other devices") instead of copying the test device's choice.
 
 ## Summary
 
@@ -10,7 +10,7 @@ Measurements of the Onju microphones, AEC, levels and Assist behaviour with `onj
 | --- | --- | --- |
 | Mic read bug | The full-duplex RX read the SPH0645 data one BCLK late or slipping, random per audio session (only ~19 % of sessions were correct) | `rx_clock: fast` + `rx_data_delay: pos_edge` + `input_gain: 2.0` (Audio Stack fork branch, upstream [PR #17](https://github.com/n-IA-hane/esphome-audio-stack/pull/17)) |
 | Mic choice | The left mic picks up the own speaker ~20 dB louder (internal path); with music the right mic alone is clearly better; units may differ | default: average both; per device: measure and override (e.g. `mic_channel: right`) |
-| AEC | `sr_high_perf` + `filter_length: 4` removes 11–30 dB echo below 3 kHz, keeps the talker, helps the wake word | `mode: sr_high_perf`, `filter_length: 4`; never 6, never change at runtime |
+| AEC | The echo delay varies per music start (~50–160 ms); `filter_length: 4` removes almost nothing above ~100 ms, 8 removes 27–45 dB below 3 kHz at every delay measured | `mode: sr_high_perf`, `filter_length: 8`; never 6, never change at runtime; details and fallbacks in `ECHO_CANCELLATION.md` |
 | Gain | 16× keeps ≥ 7 dB headroom for a loud sentence close by; wake word and HA's VAD do not depend on the gain | `gain_factor: 16` (wake word and Assist) |
 | HA processing | HA up to 2026.11.1 ignores the satellite's NS/AGC/volume settings; the dev branch forwards them (PR home-assistant/core#190096) | `noise_suppression_level: 1`, `auto_gain: 16 dbfs`, `volume_multiplier: 1.0` (simulated, effective once HA forwards them) |
 | Wake word → listening | Users start talking when the wake sound ends; the first word gets lost if streaming starts later | VA starts `wake_listen_delay` after the sound starts (450 ms for the 550 ms sound, 300 ms for a 367 ms sound) |
@@ -99,21 +99,24 @@ Quiet room, speech SNR (noise subtracted) for 300–1000 Hz / 1–3 kHz / 3–7 
 - The left mic is 3–7 dB duller at 2–8 kHz (possibly a damaged protective membrane).
 - Stereo capture with native ESPHome (`i2s_audio`) had destroyed the SNR (1–2 dB instead of ~16 dB); Audio Stack's averaging does not have this problem (table above).
 - Recommendation: right-only was best **on the test device only**. The duplex config therefore averages both mics by default; measure each unit (both-slot capture, see "Quick check of other devices") and override the mic choice in its device file.
+- **A second unit was different:** both mics equal in self-noise, speech SNR at 1 m and echo pickup (echo coupling 1–3 kHz +6..+8 dB on both, between the test device's left and right mic); with music right was ~3 dB better after an ideal AEC, small enough to be mic orientation. Kept the average there.
 
 ## AEC
 
 ### AEC filter length
 
+**The echo delay decides most of the AEC result**, and it varies per music start and audio session (~50–160 ms). Full analysis, measurements, costs and fallbacks: `ECHO_CANCELLATION.md`.
+
 | Setting | Result |
 | --- | --- |
-| `sr_high_perf`, 4 (chosen) | echo removed 15–30 / 11–22 dB below 3 kHz in two captures (`sr_low_cost`: 8–9 / 8 dB), talker preserved within ~1 dB, offline wake word probability before → after the AEC 0.63 → 0.94 and 0.85 → 0.93; core0 ~32 %, core1 ~25 % with music, more free RAM |
-| `sr_low_cost`, 4 | stable, cheaper on core0 but less echo removal |
-| `filter_length: 8` | ~3.7 dB less residual echo below 1 kHz than 4, costs ~39 % more core0 load and 13 kB internal RAM: not worth it |
+| `sr_high_perf`, 8 (chosen) | 27–45 dB echo removed below 3 kHz at every delay measured (97–161 ms, 21 music starts), talker −2..−3 dB, wake word fine during music; core0 ~50 % with music (up to ~70 % with an Assist reply), needs an 80 kB contiguous DMA block at boot |
+| `sr_high_perf`, 4 | works only when a music start gets a short delay: 49 ms 12–27 dB, 65 ms ~12 dB, 75 ms 6 dB, ≥ 97 ms ≤ 3 dB |
+| `sr_low_cost`, 4 | only measured at 74 ms (7.6–8.5 dB, before the mic fix); no comparison with `sr_high_perf` at matched delay |
 | `filter_length: 6` | **broken**: no audio frames, heap corruption. Never use ([issue #18](https://github.com/n-IA-hane/esphome-audio-stack/issues/18)) |
 | Runtime change of mode or length | broke the I2S lockstep (17 s outage, extra echo until reboot): only change in YAML and flash |
 
-- An earlier comparison that favoured `sr_low_cost` (and saw a 32 ms / 3.5 dB reference shift with every other setting) ran before the mic fix on randomly misread sessions; with the fix the shift did not reappear.
-- `sr_high_perf` needs a contiguous DMA-capable internal block of 40 kB per 4 taps at setup; with 8 taps (80 kB) it is not available.
+- The earlier choice of `sr_high_perf` over `sr_low_cost` (15–30 / 11–22 dB vs. 8–9 / 8 dB with filter 4) was confounded by the delay: the `sr_high_perf` captures happened to get 49/65 ms, the `sr_low_cost` ones 74 ms. The earlier "filter 8 is not worth it" result came from captures with ~64–96 ms delay before the mic fix and is superseded.
+- An even earlier comparison that favoured `sr_low_cost` (and saw a 32 ms / 3.5 dB reference shift with every other setting) ran before the mic fix on randomly misread sessions; the "shift" was most likely the same random delay.
 - AEC off is always worse ("Echo Cancellation" switch only for A/B tests).
 - During Assist the music is ducked, so double talk only happens during the wake word.
 
@@ -163,15 +166,17 @@ One guided capture (sentences at 1 m, 3 m, loud at 30–50 cm; quiet and with mu
 
 No new clock scan; only look for problems:
 1. Partition migration if the old 4MB layout is present (`PARTITION_MIGRATION.md`), then the duplex firmware.
-2. Automatic: ~20 session restarts with the bit check (`tools/mic_check.sh <ip> <prefix> 20 --session --count`; for another unit's DC reference `--ref=R,L`, or `tools/r32_verdict.py --ref=auto` on 32-bit captures). Expected: all CORRECT.
-3. One guided both-slot capture (~3–5 min): better mic or average (speech vs. noise and vs. own music), `gain_factor` with the rules above, noise floor and DC per mic (damaged mic), echo level and AEC effect.
+2. Automatic: ~20 session restarts with the bit check (`tools/mic_check.sh <ip> <prefix> 20 --session --count`; for another unit's DC reference `--ref=R,L`, or `tools/r32_verdict.py --ref=auto` on 32-bit captures). Expected: all CORRECT. The DC differs per unit (a second unit read ~12 % higher than the test device and failed the default reference while the bits were correct). With the default `rx_mic_slots: [left, right]`, raw ch0 is the **left** mic (`r32_verdict.py` labels ch0 "R").
+3. One guided both-slot capture (~3–5 min): better mic or average (speech vs. noise and vs. own music), `gain_factor` with the rules above, noise floor and DC per mic (damaged mic), echo level and AEC effect. Analyze without `--right-first` for the default slot order, and with `--device-path avg` if the processed option is reported as unknown.
+4. Check the boot log for `esp_aec` `Initialized: YES` and run the automated AEC delay test (`ECHO_CANCELLATION.md`).
 
 ## Tools and workflow
 
 | Tool | Purpose |
 | --- | --- |
 | `tools/capture_audio.py` | receiver for `esp_audio_capture` |
-| `tools/analyze_capture.py` | per capture: integrity and raw I2S check, levels/clipping, SNR along the chain, echo coupling and AEC effect, speech preservation, left/right/average; `--compare` for variants with the same music; `--right-first` for both-slot captures |
+| `tools/analyze_capture.py` | per capture: integrity and raw I2S check, levels/clipping, SNR along the chain, echo coupling and AEC effect, speech preservation, left/right/average; `--compare` for variants with the same music; `--right-first` for both-slot captures; `--device-path avg` to skip the detection of the processed mic option |
+| `tools/aec_delay.py` | echo delay as the AEC sees it, audio-loop cadence and device AEC reduction per capture, independent of the stream alignment (music-only captures) |
 | `tools/mic_check.sh` | bit check after a reboot or "Session restart": CORRECT / LATE / SLIPPING, restarts until CORRECT; `--count`, `--log=<device>.yaml`, `--ref=R,L`, offline `--analyze` |
 | `tools/r32_verdict.py`, `tools/raw32_bits.py` | exact verdict and bit view of 32-bit both-slot captures |
 | `tools/level_tune.py`, `tools/mww_gain.py` | offline gain / HA NS / AGC simulation and wake word probability per gain |
@@ -186,9 +191,11 @@ Test protocol for config variants: same track and volume, wait ~10 s (AEC conver
 Pitfalls that caused wrong conclusions:
 - Band powers at 48 and 16 kHz need the same window **duration**, not the same FFT size.
 - High-pass at 80 Hz first: the SPH0645 drifts strongly below 50 Hz.
-- Echo delay ~64 ms; `processor_output` lags `processor_input` by one AEC frame (512 samples).
+- The echo delay is **not** fixed (~50–160 ms, new per music start): note it per capture and compare AEC settings only at matched delays (`tools/aec_delay.py`). `processor_output` lags `processor_input` by one AEC frame (512 samples).
 - Use the automatic speech detection, not hand-picked segments; an instrumental track can fool it.
-- A capture started during music has ~64 ms of echo without reference: exclude it.
+- A capture started during music has one echo delay of echo without reference: exclude it.
+- Stream alignment is anchored on `raw_mic`, the first tap of each audio cycle; anchoring on the last-started stream became ambiguous once the AEC took longer (filter 8).
+- A test file without the playback DSP of the usual player can drive the amp/speaker into distortion at 50 % volume (less linear echo); use ~35 %.
 - Compare captures only with matching reference level; exclude the own TTS before comparing mics.
 - ESPHome replaces `/` in entity names with `⁄`: avoid `/` in button names.
 - CLI logs: `timeout` inside the container, otherwise orphaned clients block the device API.
