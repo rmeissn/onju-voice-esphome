@@ -160,7 +160,7 @@ One guided capture (sentences at 1 m, 3 m, loud at 30–50 cm; quiet and with mu
 - **Reply LED and unducking too early:** `on_end` fires before the TTS reply plays. Wait until the VA is idle, then until the announcement resampler stopped (it stays "playing" until all frames were played); no extra delay needed.
 - **Alarm siren from the device:** an `audio_file` on a second media source in the media pipeline instead of HTTP streaming (id `alarm` is reserved in ESPHome). The original file ends with 1 s of silence; a trimmed 8 s version shortens the gap between repeats.
 - **LED animations** look less smooth since ESPHome 2026.9 (suspected: the gamma table fix makes the coarse low-brightness steps visible with `gamma_correct: 2.8`; untested: lower gamma or higher minimum brightness).
-- **AFE/BSS with two mics** (`esp_afe`) would combine both mics adaptively, but needs much more internal RAM, assumes similar mics and may hurt the wake word. Not tested.
+- **AFE/BSS with two mics** (`esp_afe`) was tested (`mic_num: 2`, `se_enabled: true`, `aec_filter_length: 8`, both `high_perf` and `low_cost`, with and without VAD/AGC): even with GMF ring buffers moved to PSRAM, dual-mic AFE/BSS saturates the ESP32-S3 CPU under music playback + wake word + Assist (`+in_drop` / playback stutter), so standalone `esp_aec` remains the limit on this hardware. Measurements: `RESOURCE_INVESTIGATION.md`.
 
 ## Quick check of other devices
 

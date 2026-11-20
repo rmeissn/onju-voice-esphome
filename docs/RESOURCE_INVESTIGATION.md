@@ -49,6 +49,7 @@ Diagnostic build after music + Assist (`filter_length: 8`): `loopTask` (componen
 - **Music start transient:** Sendspin `Lost sync` and `spk_underrun` 26–80 in the first window after a stream start (short audible glitch), then 0 during steady music.
 - **Main loop blocked ~200 ms at a music start** (`esp_audio_stack.speaker` 187 ms, `esp_audio_stack.microphone` 210 ms, then the micro_wake_word ring buffer reset), seen once with `filter_length: 8`. Watch whether it repeats.
 - **Audio-loop stalls of 60–140 ms** (`Perf` frame_us max) 3–5 s after stream starts when a PCM capture started at the same time; once also with filter 4 (108 ms). Not seen without capture start.
+- **Stutter during steady music** (second unit, `filter_length: 8`, once ~26 min after boot): `spk_underrun` 52 + 105 in two `Perf` windows, then four Sendspin `Lost sync` (49 → 17 ms off) and one more (81 ms) 30 s later. CPU per core (10 s average), main loop and audio frame times stayed normal. A laptop speed test next to the device did not reproduce it. Cause open (filter 8 load on core0 next to the WiFi task, local WiFi interference, or the server). Watch whether it repeats; if so, measure the per-task load with `log_details()`.
 - **Harmless at boot:** `debug set Warning flag: unspecified` (cleared ~1 s later) and once `api took a long time for an operation (52 ms)`.
 - Clean: hundreds of session restarts and reboots (mic bug tests), the RX clock scan, `bits_per_sample: 32` (49.5 kB internal free) and a full switch/feature run (siren, mute, LEDs, AEC off/on, wake word off/on, Assist) showed no `[E]`, no crash and no `spk_underrun` during steady music.
 
@@ -63,3 +64,16 @@ Diagnostic build after music + Assist (`filter_length: 8`): `loopTask` (componen
 | Disable Sendspin | hub task + buffers + protocol task | no multi-room playback |
 
 Notes: `sr_high_perf` needs a **contiguous** DMA-capable internal block of 40 kB per 4 filter taps at setup (80 kB with `filter_length: 8`; free on every boot tested with the current config), otherwise the AEC fails until the next boot (`Initialized: NO`, fallback `sr_low_cost`, see `ECHO_CANCELLATION.md`). `bits_per_sample: 32` doubles the I2S DMA buffers (~32 → ~64 kB).
+
+## Dual-mic AFE / BSS experiment (not viable)
+
+Tested `esp_afe` (`type: sr`, `mic_num: 2`, `se_enabled: true`, `aec_filter_length: 8`, `memory_alloc_mode: more_psram`, `output_prebuffer_frames: 1`) as a replacement for `esp_aec` on the full-duplex music + wake word + Assist config:
+
+- **Internal RAM without PSRAM ring buffers:** ~154.1 kB static DIRAM (+~18 kB over `esp_aec`); at runtime only **4.1 kB** free internal RAM idle (min 2.5 kB, DMA 1.0 kB free), dropping to **1.5 kB** when starting a PCM capture (`esp_audio_capture` failed to start). Disabling post-AFE AGC (`agc_enabled: false`) freed only ~0.5 kB (4.6 kB free idle); `vad_init` remains allocated structurally by `esp_afe`.
+- **PSRAM bridge buffers solve the RAM bottleneck:** setting `feed_buf_in_psram: true`, `feed_ring_in_psram: true`, `fetch_ring_in_psram: true` moves ~38 kB of GMF staging/ring buffers out of internal RAM, restoring **43.7–48.9 kB** free internal RAM idle (~18–25 kB minimum during music + capture).
+- **CPU exceeds the ESP32-S3 budget under real workload:**
+  - `mode: high_perf` + VAD + AGC + PSRAM rings, `feed_task_core: 0` (`task_core: 1`, `fetch_task_core: 1`, `feed_task_priority: 10`): idle core0 ~79–82 %, core1 ~26 % (`+glitch=0`); during music playback alone core0 hits **83–100 %** with `+glitch=12` / `+in_drop=3` per 128-frame window; during music + capture core0 = **100.0 %** / core1 = **64.7 %** (`+glitch=43..50`, `+in_drop=10..13`, echo reduction drops to ~0 dB on ch0).
+  - Moving `feed_task_core: 1` (`task_core: 0`, `fetch_task_core: 0`) frees core0 (46.7 % during music + capture) but saturates core1 (**100.0 %** alongside ESPHome's `loopTask`, `micro_wake_word`, FLAC decoder, and mixer), causing heavy playback stutter (`spk_underrun=90..128`, `mixer.speaker` blocked 1213 ms).
+  - `mode: low_cost` with `aec_filter_length: 8` + SE/BSS uses **more** CPU than `high_perf` here: with VAD+AGC on core1 it triggered a Task Watchdog reset in `esp_aec3_hps16fft_process` (`afe_feed`), and even with **both VAD and AGC disabled** (`feed_task_core: 0` prio 10), core0 stayed at **100.0 %** already when idle (`+glitch=20` / `+in_drop=5`) and dropped ~50 % of frames during music + capture (`+glitch=60..67` / `+in_drop=15..17`, core1 50.4 %).
+
+Conclusion: dual-mic AFE/BSS with `aec_filter_length: 8` is beyond the ESP32-S3's compute headroom in this combined music player + wake word + Voice Assistant firmware. Stay on standalone `esp_aec` (`onju_duplex_i2s.yaml`).

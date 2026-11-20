@@ -29,7 +29,7 @@ Code is inspired by https://github.com/tetele/onju-voice-satellite and https://g
 
 ### Partition table / OTA size
 
-An OTA update only replaces the firmware, **not the partition table**. The device keeps the partition table of the last flash via USB cable. With `flash_size: 16MB`, ESPHome 2026.10 creates two app partitions of about 7.9MB each, and the build output reports the free space based on this table. If your Onju was flashed via cable with an older or smaller layout, the real OTA partitions on the device are smaller and larger builds (e.g. `onju_duplex_i2s.yaml` with about 2.4MB) fail via OTA, although the build says there is plenty of space left.
+An OTA update only replaces the firmware, **not the partition table**. The device keeps the partition table of the last flash via USB cable. With `flash_size: 16MB`, ESPHome 2026.10 creates two app partitions of about 7.9MB each, and the build output reports the free space based on this table. If your Onju was flashed via cable with an older or smaller layout, the real OTA partitions on the device are smaller and larger builds (e.g. `onju_duplex_i2s.yaml` at ~2.9MB) fail via OTA, although the build says there is plenty of space left.
 
 Fix: flash once via USB cable with the factory image (bootloader, partition table and firmware; in the ESPHome Device Builder via Install -> manual download -> factory format, OTA installs don't build it). Afterwards, OTA updates use the large partitions. Settings stored on the device (volume, switch states, Sendspin pairing) are reset by this; Wi-Fi and API come from the configuration. The partition table of a device is printed in its boot log (with the `debug` component also in the normal ESPHome log, look for `Partition table:`).
 
@@ -40,17 +40,17 @@ Without USB, ESPHome 2026.10+ can also migrate the layout via OTA: a small tempo
 `onju_duplex_i2s.yaml` supports:
 
 * Wake word ("Okay Nabu", adjustable sensitivity) and activation via the top action button
-* Wake word and voice commands while music is playing or a timer is ringing (software echo cancellation)
-* Both microphones averaged to one signal; adjustable mic gain and an echo cancellation switch for testing
+* Wake word and voice commands while music is playing or a timer is ringing (via software echo cancellation)
 * Music playback via Music Assistant (Sendspin, incl. group playback) and Home Assistant
 * Ducking: music is practically muted while you speak to the assistant and quieter during replies and Home Assistant announcements
 * Muting (hardware switch and software switch)
 * Volume change via the side touch buttons, with LED volume indicator (optionally also for volume changes from HA / Music Assistant)
-* Timers (setting, ringing, cancelling) and an alarm siren mode (full volume with a custom sound)
+* Timers (setting, ringing, cancelling) and an alarm siren mode, with adjustable timer and alarm volumes
 * Play/Pause, stop timer ringing, stop announcements and start the voice assistant via the top action button
 * Soft reset via long press on the top action button, double/triple/long press events for automations in Home Assistant
 * LED feedback for all states, including a (switchable) connection error indicator
-* A dedicated stop word to stop a ringing timer (like voice pe)
+* A dedicated `"stop"` wake word to stop a ringing timer (enabled only while ringing)
+* Requests Home Assistant pipeline noise suppression (`level 1`) and auto gain (`16 dBFS`) (ignored by HA up to 2026.11, forwarded from a later release via home-assistant/core PR #190096)
 
 What is currently missing (in comparison to the Voice PE):
 * Visual timer "time elapsed" feedback - too few LEDs
@@ -84,26 +84,9 @@ In earlier tests, using both microphones as a stereo signal reduced the signal-t
 
 ## Known issues and ideas
 
+* **Hardware limit – no on-device AFE / BSS (beamforming), NS, or AGC:** `esp_afe` with dual-mic BSS/beamforming, noise suppression, VAD, and auto gain was tested (also seperately), but in this combination of media player playback, wake word detection, and Voice Assistant it exceeds the ESP32-S3's CPU headroom ([docs/RESOURCE_INVESTIGATION.md](docs/RESOURCE_INVESTIGATION.md)). Standalone echo cancellation (`esp_aec`) is the practical limit for this workload.
 * With the two SPH0645 microphones on the shared full-duplex bus, the current esphome-audio-stack release reads the microphone data at a random position per audio session (boot): often one bit late, sometimes slipping (then the wake word and speech recognition fail until the next restart). Cause: the internal I2S receive slave samples too late with its coarse clock. A fix as two new options (`rx_clock: fast`, `rx_data_delay: pos_edge`, ESP32-S3) is tested on two devices and offered to esphome-audio-stack as [pull request #17](https://github.com/n-IA-hane/esphome-audio-stack/pull/17); until a release contains it, `onju_duplex_i2s.yaml` loads the component from the fork branch. With the fix the level is 6 dB lower, `input_gain: 2.0` restores it.
 * With esphome-audio-stack 2026.7, the wake word detection could stop after a while until the device was restarted (an I2S error permanently stopped the microphone). Since 2026.11 the audio path recovers, but only on the next start request. If this still happens, a wake word watchdog (described in a comment in `onju_duplex_i2s.yaml`) could restart the wake word automatically.
 * The automatic switch-off of a ringing timer (15 min) and of the alarm siren (5 min) uses a delay that isn't cancelled when it is triggered again, so a second timer within that time could be switched off early. A fix is described in a comment in the configurations.
-
-## Areas to improve on
-
-This is a list of areas that would improve the Onju from an ESPHome perspective, with their current status.
-
-1. Full duplex I2S bus together with a proper microphone downsampling algorithm
-   - **Implemented in `onju_duplex_i2s.yaml`** (tested on two devices): esphome-audio-stack owns the shared bus, runs microphone and speaker at the same time and converts the microphone from 48kHz to 16kHz with Espressif's rate converter (instead of taking each third sample, which introduces audible artifacts). The former custom proxy component isn't needed anymore.
-   - Native ESPHome (`i2s_audio`) still can't do full duplex on one bus. Since 2026.10 it has a resampler microphone platform, which covers the downsampling part.
-2. Noise Suppression & Auto Gain for the microphone
-   - **Partially:** the voice assistant requests noise suppression and auto gain from the Home Assistant pipeline (`noise_suppression_level`, `auto_gain`). Home Assistant up to 2026.11 ignores these settings for ESPHome devices; they are passed on from a later release (home-assistant/core PR #190096). On the device, the duplex configuration only applies echo cancellation (`esp_aec`).
-   - On-device noise suppression and auto gain are available with the Espressif AFE (`esp_afe`) of esphome-audio-stack, but not used yet. The microphone on the Onju captures a lot of noise, so this could help with voice commands from more than 2m away. See this link: https://github.com/esphome/issues/issues/6599#issuecomment-3896756251
-3. Support for both microphones to apply Blind Source Separation (BSS) and Multi Input Single Output (MISO) strategies
-   - **Open:** the duplex configuration averages both microphones into one signal, which is neither BSS nor MISO. The old stereo problem (SNR dropping from about 16-20db to 1-2db with native ESPHome) does not occur with the averaging: on the test device it keeps the SNR of a single microphone in a quiet room.
-   - esphome-audio-stack supports BSS with both microphones via `esp_afe` (`mic_num: 2`), which replaces `esp_aec` and needs more CPU and memory. MISO isn't offered.
-4. Software based Acoustic Echo Cancellation for enabling to use wake words (like "okay nabu" or "stop") while something is played on the speaker
-   - **Implemented in `onju_duplex_i2s.yaml`** with `esp_aec` (`sr_high_perf`, a speech recognition mode that preserves the features the wake word model needs, with `filter_length: 8` because the echo delay changes with every music start; see [docs/ECHO_CANCELLATION.md](docs/ECHO_CANCELLATION.md) and [issue #19](https://github.com/n-IA-hane/esphome-audio-stack/issues/19)). Software AEC isn't as good as a dedicated hardware chip, so the wake word might not trigger every time while loud music is playing.
-5. A dedicated "stop" wake word to stop a ringing timer or an announcement
-   - **Open:** possible now thanks to echo cancellation, e.g. with the `stop` model that the Voice PE uses.
-6. Fine tuning on the device
-   - Microphone gain, echo cancellation mode and filter length, and wake word sensitivity need to be tuned on the real device. The values in the configuration were measured on two devices; other units may differ (e.g. which microphone picks up less of the own speaker).
+* Idea: also enable the `"stop"` wake word during long TTS replies or Home Assistant announcements (currently only active while a timer rings).
+* Note: microphone gain and the better microphone (left, right, or averaged) can vary per unit; [docs/AUDIO_INVESTIGATION.md](docs/AUDIO_INVESTIGATION.md) explains how to check another device.
