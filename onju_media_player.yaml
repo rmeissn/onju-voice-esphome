@@ -5,10 +5,10 @@ substitutions:
   friendly_name: "Onju Voice Common Code"
   project_version: "1.2.0"
   device_description: "Common code for the onju voice, to be included in all onju voice devices"
-  ha_base_url: "http://192.168.0.202:8123"
-  mute_sound_url: "${ha_base_url}/local/mute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_disconnected.flac
-  unmute_sound_url: "${ha_base_url}/local/unmute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_connected.flac
-  alarm_sound_url: "${ha_base_url}/local/alarm.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
+  mute_sound_url: "sounds/mute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_disconnected.flac
+  unmute_sound_url: "sounds/unmute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_connected.flac
+  alarm_sound_url: "sounds/alarm_8s.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
+  # Sounds: the files of this repository (sounds/, credits in sounds/CREDITS.md), paths relative to the config folder. Override a substitution with another path or an http(s) URL to use other sounds.
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
 
 esphome:
@@ -833,7 +833,7 @@ script:
                       - media_player.is_announcing:
                           id: external_media_player
                 timeout: 60s
-            - delay: 50ms # short gap between repeats (the HA alarm.flac also ends with 1 s of silence)
+            - delay: 50ms # short gap between repeats (alarm_8s.flac is the alarm without its trailing 1 s of silence)
 
 switch:
   # This is the master mute switch. The user can only turn it on and off if the hardware switch is off. (The hardware switch overrides the software one)

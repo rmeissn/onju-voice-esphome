@@ -6,9 +6,9 @@
 """Shorter variants of the wake sound (user's wish 2026-11-15, docs/AUDIO_INVESTIGATION.md "Assist test with the final
 settings": users start talking when the sound ends, so a shorter sound lets the VA listen earlier).
 
-Usage: uv run tools/make_wake_variants.py sounds/wakeup_original_745ms.flac sounds/
+Usage: uv run tools/make_wake_variants.py sounds/wakeup.flac sounds/
 Source: "New Notification #7" by UNIVERSFIELD (freesound 736267), 48 kHz: sweep 225 -> 650 Hz (0-160 ms), tone until
-~220 ms, then a slow decay (about 8 dB per 100 ms). Writes wake_v1..v5 FLAC files next to it.
+~220 ms, then a slow decay (about 8 dB per 100 ms). Writes wake_v1..v5 FLAC files next to it. `sounds/wakeup_v2.flac` is variant 5 (wake_v5_faster_higher_367ms), renamed.
 """
 
 import sys

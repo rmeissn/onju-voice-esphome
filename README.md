@@ -22,7 +22,7 @@ Code is inspired by https://github.com/tetele/onju-voice-satellite and https://g
 
 ## Getting started
 
-A detailed step-by-step guide for reusing this configuration is in [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md): flashing a general state, finding and setting your flash chip, using your own sounds (or the Voice PE sounds) and, optionally, finding out which of the two microphones is better for your unit.
+A detailed step-by-step guide for reusing this configuration is in [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md): flashing a general state, finding and setting your flash chip, the sounds included in [`sounds/`](sounds/) (used by default; or use your own / the Voice PE sounds) and, optionally, finding out which of the two microphones is better for your unit.
 
 ### Partition table / OTA size
 
@@ -87,3 +87,7 @@ In earlier tests, using both microphones as a stereo signal reduced the signal-t
 * The automatic switch-off of a ringing timer (15 min) and of the alarm siren (5 min) uses a delay that isn't cancelled when it is triggered again, so a second timer within that time could be switched off early. A fix is described in a comment in the configurations.
 * Idea: also enable the `"stop"` wake word during long TTS replies or Home Assistant announcements (currently only active while a timer rings).
 * Note: microphone gain and the better microphone (left, right, or averaged) can vary per unit; [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md#4-optional-find-out-which-microphone-is-better) explains how to measure your unit and override the microphone choice, [docs/AUDIO_INVESTIGATION.md](docs/AUDIO_INVESTIGATION.md) has the background.
+
+## Credits
+
+- Sounds in [`sounds/`](sounds/): authors and licenses (CC BY 4.0, CC0) in [`sounds/CREDITS.md`](sounds/CREDITS.md).

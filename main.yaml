@@ -4,9 +4,8 @@ substitutions:
   friendly_name: "Onju Voice Example Device"
   project_version: "1.3.0"
   device_description: "Onju Voice Satellite with ESPHome software and microWakeWord"
-  # The sound files are loaded from Home Assistant at build time (HA folder config/www -> URL /local/...).
-  # Override the *_sound_url substitutions of the chosen config with the address of your HA instance, e.g.:
-  # wakeup_sound_url: "http://homeassistant.local:8123/local/wakeup.flac"
+  # Sounds: the *_sound_url substitutions default to the files in sounds/ (credits: sounds/CREDITS.md). Override them to use
+  # other sounds, e.g. the original wake sound: wakeup_sound_url: "sounds/wakeup.flac" with wake_listen_delay: 450ms. More in docs/SETUP_GUIDE.md, section 3.
 
 packages:
   # choose one of the configs:

@@ -7,10 +7,10 @@ Step-by-step instructions for everyone who wants to run one of the configuration
 **Recommended for every device:**
 
 - **Find your flash chip and set it** ([section 2](#2-find-your-flash-chip-and-set-it)): a few minutes, frees some of the device's scarce memory.
-- **Use your own sounds** ([section 3](#3-use-your-own-sounds-or-the-voice-pe-sounds)): the defaults point to my Home Assistant, so you have to set them anyway. The Voice PE sounds work out of the box.
 
 **Optional, fine-tuning:**
 
+- **Use other sounds** ([section 3](#3-use-your-own-sounds-or-the-voice-pe-sounds)): the sounds I use are included in this repository (`sounds/`, with credits) and used by default, so nothing is needed. Section 3 shows how to use your own or the Voice PE sounds instead.
 - **Find out which microphone is better** ([section 4](#4-optional-find-out-which-microphone-is-better)): not necessary. By default the Onju uses both of its microphones together, which works well even if they differ a bit. A short measurement tells you whether one of them is clearly better, so that using only that one squeezes out a little more.
 
 The sections in order:
@@ -46,7 +46,7 @@ You need: an Onju Voice (original pcb, ESP32-S3 N16R8), a USB cable, [ESPHome](h
    | `onju_media_player.yaml` | Speaker only (music, timer/alarm sounds), no microphone. The most stable one. |
 
    `onju_duplex_i2s.yaml` gives the device a MAC suffix in its name (`name_add_mac_suffix: true`); add `esphome: name_add_mac_suffix: false` to your device file if you do not want that.
-5. **Set up the sounds.** The six `*_sound_url` substitutions of `onju_duplex_i2s.yaml` (in `onju_media_player.yaml` the three it has are derived from one `ha_base_url`; overriding that one is enough there) point to **my** Home Assistant (`http://192.168.0.202:8123/local/...`). On your network the build fails until you override all of them. The quickest start is the preset in [section 3](#3-use-your-own-sounds-or-the-voice-pe-sounds), it needs no hosting.
+5. **Sounds: nothing to do.** The sounds are part of this repository (`sounds/`), and the configurations use them by default (paths relative to your ESPHome folder, so keep the `sounds/` folder next to your device file). If you want other sounds, see [section 3](#3-use-your-own-sounds-or-the-voice-pe-sounds).
 6. **Recommended, per unit:** the flash chip setting ([section 2](#2-find-your-flash-chip-and-set-it)). You can add it after the first boot.
 7. **Build and flash by USB cable the first time.** In the Device Builder: *Install* → *Plug into this computer*, or *Manual download* → *Factory format* and flash that file (for example with [ESPHome Web](https://web.esphome.io)). A cable flash is needed once because an OTA update does not replace the partition table; an old firmware of the Onju may have a smaller one. Details: [README, "Partition table / OTA size"](../README.md#partition-table--ota-size). Afterwards OTA updates work. This can also be done without a usb cable, see [Partition Migration](PARTITION_MIGRATION.md)
 8. **Add the device in Home Assistant.** It is discovered by the ESPHome integration (there is no API encryption key in the configuration). On the device page choose the Assist pipeline (the entity names depend on your Home Assistant version) and, for Sendspin, pair it in Music Assistant (2.10.7 or newer).
@@ -89,19 +89,30 @@ Possible values (ESPHome 2026.11): `gd`, `issi`, `mxic`, `winbond`, `boya`, `th`
 
 The device plays short sounds (wake word detected, timer, mute, alarm siren, ...). They are stored **in the firmware**, so they work without Home Assistant. You choose them in your device file: each one takes either a web address (`https://...`) or a file path **relative to the folder of your device file**. The files are read when you build the firmware; each must be at most 5 MB, and WAV, MP3, FLAC and Opus work.
 
-| Setting (substitution) | Played when | Where it exists |
-| --- | --- | --- |
-| `wakeup_sound_url` | the wake word was detected (and when the top button starts the assistant) | duplex |
-| `error_sound_url` | the voice assistant reports an error | duplex |
-| `timer_finished_sound_url` | a timer rings (repeated until stopped) | duplex |
-| `mute_sound_url`, `unmute_sound_url` | muting / unmuting (hardware switch or software) | duplex, media player |
-| `alarm_sound_url` | the alarm siren (looped) | duplex, media player |
+| Setting (substitution) | Default file in `sounds/` | Played when | Where it exists |
+| --- | --- | --- | --- |
+| `wakeup_sound_url` | `wakeup_v2.flac` | the wake word was detected (and when the top button starts the assistant) | duplex |
+| `error_sound_url` | `error.flac` | the voice assistant reports an error | duplex |
+| `timer_finished_sound_url` | `timer_finished.flac` | a timer rings (repeated until stopped) | duplex |
+| `mute_sound_url`, `unmute_sound_url` | `mute.flac`, `unmute.flac` | muting / unmuting (hardware switch or software) | duplex, media player |
+| `alarm_sound_url` | `alarm_8s.flac` | the alarm siren (looped) | duplex, media player |
 
-The defaults of all of them point to my Home Assistant. The configurations in this repository credit the original sources of my own sounds in comments next to the defaults.
+### Out of the box: the sounds of this repository
 
-### Quick start: the Voice PE sounds
+The folder [`sounds/`](../sounds/) contains the sounds I use, already in the right format, and they are the defaults; authors and licenses are in [`sounds/CREDITS.md`](../sounds/CREDITS.md). Most of them are licensed CC BY 4.0, so keep `sounds/CREDITS.md` with them if you pass your firmware or the files on.
 
-The sounds of the Home Assistant Voice Preview Edition already have the right format, so you can use them **unchanged**. The Voice PE has no error and no alarm sound, so for those **you have to provide your own files** (or use another Voice PE sound as a stopgap, e.g. `timer_finished.flac` for the alarm; I have not tested that).
+The default wake sound `wakeup_v2.flac` is a shortened version (367 ms) of the original, so the assistant starts listening sooner (`wake_listen_delay: 300ms`). It sounds a bit more robotic than the original. If you prefer the original wake sound (745 ms), add to the `substitutions:` of your device file:
+
+```yaml
+substitutions:
+  # ... name, friendly_name as before
+  wakeup_sound_url: "sounds/wakeup.flac"
+  wake_listen_delay: 450ms
+```
+
+### Alternative: the Voice PE sounds
+
+The sounds of the Home Assistant Voice Preview Edition also have the right format, so you can use them **unchanged**. The Voice PE has no error and no alarm sound, so the preset below keeps the defaults for those two.
 
 Add to the `substitutions:` of your device file:
 
@@ -113,8 +124,6 @@ substitutions:
   timer_finished_sound_url: "${vpe_sounds}/timer_finished.flac"
   mute_sound_url: "${vpe_sounds}/jack_disconnected.flac"
   unmute_sound_url: "${vpe_sounds}/jack_connected.flac"
-  error_sound_url: "sounds/error.flac"   # your own file, see below
-  alarm_sound_url: "sounds/alarm.flac"   # your own file, see below
   wake_listen_delay: 550ms               # see "Wake sound and listening start"
 ```
 
@@ -149,7 +158,7 @@ Keep the sounds short: they sit in the firmware, and the wake sound adds to the 
 
 ### Wake sound and listening start
 
-After the wake word the device plays the wake sound and starts listening a little later (`wake_listen_delay`, default `450ms`, fits my 550 ms sound). If it starts listening too early, the sound itself ends up in what is sent to speech recognition; too late, and the first words are lost. If you use a different wake sound, set the delay **about 100 ms before the audible part of the sound ends**, for example `550ms` for a sound of 0.65 to 0.7 seconds (the preset above uses this for the Voice PE sound; I have not tuned it on a device).
+After the wake word the device plays the wake sound and starts listening a little later (`wake_listen_delay`, default `300ms`, fits `wakeup_v2.flac` of this repository; `450ms` fits the original `wakeup.flac`). If it starts listening too early, the sound itself ends up in what is sent to speech recognition; too late, and the first words are lost. If you use a different wake sound, set the delay **about 100 ms before the audible part of the sound ends**, for example `550ms` for a sound of 0.65 to 0.7 seconds (the preset above uses this for the Voice PE sound; I have not tuned it on a device).
 
 ### Check
 

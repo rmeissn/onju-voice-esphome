@@ -5,14 +5,15 @@ substitutions:
   friendly_name: "Onju Voice Common Code"
   project_version: "1.3.0"
   device_description: "Common code for the onju voice, to be included in all onju voice devices"
-  wakeup_sound_url: "http://192.168.0.202:8123/local/wakeup.flac" # New Notification #7 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/736267/
-  error_sound_url: "http://192.168.0.202:8123/local/error.flac" # Error #8 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734442/
-  timer_finished_sound_url: "http://192.168.0.202:8123/local/timer_finished.flac" # New Notification #6 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734445/
-  mute_sound_url: "http://192.168.0.202:8123/local/mute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_disconnected.flac
-  unmute_sound_url: "http://192.168.0.202:8123/local/unmute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_connected.flac
-  alarm_sound_url: "http://192.168.0.202:8123/local/alarm.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
-  # Delay from the wake sound start (announcement path playing) to voice_assistant.start: near the end of the sound's audible part (450ms for the 550/745ms sound; set it with a shorter wakeup_sound_url). docs/AUDIO_INVESTIGATION.md
-  wake_listen_delay: 450ms
+  wakeup_sound_url: "sounds/wakeup_v2.flac" # New Notification #7 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/736267/ (shortened to 367 ms, see sounds/CREDITS.md; the original is sounds/wakeup.flac, use it with wake_listen_delay: 450ms)
+  error_sound_url: "sounds/error.flac" # Error #8 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734442/
+  timer_finished_sound_url: "sounds/timer_finished.flac" # New Notification #6 by UNIVERSFIELD https://freesound.org/people/UNIVERSFIELD/sounds/734445/
+  mute_sound_url: "sounds/mute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_disconnected.flac
+  unmute_sound_url: "sounds/unmute.flac" # https://github.com/esphome/home-assistant-voice-pe/blob/dev/sounds/jack_connected.flac
+  alarm_sound_url: "sounds/alarm_8s.flac" # https://freesound.org/people/JW_Audio/sounds/828581/
+  # Delay from the wake sound start (announcement path playing) to voice_assistant.start: near the end of the sound's audible part (300ms for sounds/wakeup_v2.flac, 450ms for sounds/wakeup.flac; set it together with another wakeup_sound_url). docs/AUDIO_INVESTIGATION.md
+  wake_listen_delay: 300ms
+  # Sounds: the files of this repository (sounds/, credits in sounds/CREDITS.md), paths relative to the config folder. Override a substitution with another path or an http(s) URL to use other sounds.
   # NOTE for sounds: all sound were converted to flac, mono, 48khz (match the speaker sample_rate!), highest compression -> so they are as small as possible
 
 # Measurement aids (resource monitor, telemetry, PCM capture, heap diagnostic) are separate packages in diagnostics/,
@@ -1408,7 +1409,7 @@ script:
                       - media_player.is_announcing:
                           id: nabu
                 timeout: 60s
-            - delay: 50ms # short gap between repeats (the HA alarm.flac also ends with 1 s of silence)
+            - delay: 50ms # short gap between repeats (alarm_8s.flac is the alarm without its trailing 1 s of silence)
 
   - id: check_if_timers_active
     then:
