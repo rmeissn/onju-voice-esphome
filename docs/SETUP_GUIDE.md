@@ -11,6 +11,7 @@ Step-by-step instructions for everyone who wants to run one of the configuration
 **Optional, fine-tuning:**
 
 - **Use other sounds** ([section 3](#3-use-your-own-sounds-or-the-voice-pe-sounds)): the sounds I use are included in this repository (`sounds/`, with credits) and used by default, so nothing is needed. Section 3 shows how to use your own or the Voice PE sounds instead.
+- **Improve the music quality** ([section 5](#5-optional-better-music-quality-with-music-assistant)): if you play music with Music Assistant, a ready-made sound correction makes the small speaker sound better.
 - **Find out which microphone is better** ([section 4](#4-optional-find-out-which-microphone-is-better)): not necessary. By default the Onju uses both of its microphones together, which works well even if they differ a bit. A short measurement tells you whether one of them is clearly better, so that using only that one squeezes out a little more.
 
 The sections in order:
@@ -19,6 +20,7 @@ The sections in order:
 2. [Find your flash chip](#2-find-your-flash-chip-and-set-it)
 3. [Use your own sounds (or the Voice PE sounds)](#3-use-your-own-sounds-or-the-voice-pe-sounds)
 4. [Optional: find out which microphone is better](#4-optional-find-out-which-microphone-is-better)
+5. [Optional: better music quality with Music Assistant](#5-optional-better-music-quality-with-music-assistant)
 
 Everything below was written for `onju_duplex_i2s.yaml`. `onju_media_player.yaml` needs the same steps 1 to 3 (it has fewer sounds, see section 3) and has no microphone.
 
@@ -292,3 +294,7 @@ esp_audio_stack:
 For the left microphone it is `mic_channel: left` (I only ran the right one on hardware). Leave everything else as it is. Flash, then **test it in practice**: with music playing and without, say the wake word from about 1 m and from about 3 m. It should work at least as well as before, and better during music. If it works worse, you probably have left and right the wrong way round: set `mic_channel` to the other side, or remove the block to go back to the default. If the wake word now reacts too weakly or too strongly, see [AUDIO_INVESTIGATION.md, "Levels and gain"](AUDIO_INVESTIGATION.md#levels-and-gain).
 
 Afterwards you can remove `diagnostics/audio_capture.yaml` and `capture_address` from your device file again and close the firewall port.
+
+## 5. Optional: better music quality with Music Assistant
+
+The Onju's small speaker sounds thin. If you play music with Music Assistant, you can improve it there: Music Assistant has a sound processing (DSP) for every player, and this repository contains the settings I use, as an importable file. It is applied by Music Assistant on the server, not on the device, so it only affects music that comes from Music Assistant (not voice replies, announcements or the device's own sounds), and nothing in the ESPHome configuration changes. In my listening it sounds clearly less like a tin can and somewhat warmer; a lot more bass is not possible with this speaker. Setup in a few minutes, the settings and the limits are described in [MUSIC_QUALITY.md](MUSIC_QUALITY.md).

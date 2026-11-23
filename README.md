@@ -39,6 +39,7 @@ Without USB, ESPHome 2026.10+ can also migrate the layout via OTA: a small tempo
 * Wake word ("Okay Nabu", adjustable sensitivity) and activation via the top action button
 * Wake word and voice commands while music is playing or a timer is ringing (via software echo cancellation)
 * Music playback via Music Assistant (Sendspin, incl. group playback) and Home Assistant
+* Better music quality for music from Music Assistant: a ready-made sound correction (equalizer) for the small speaker, see [docs/MUSIC_QUALITY.md](docs/MUSIC_QUALITY.md)
 * Ducking: music is practically muted while you speak to the assistant and quieter during replies and Home Assistant announcements
 * Muting (hardware switch and software switch)
 * Volume change via the side touch buttons, with LED volume indicator (optionally also for volume changes from HA / Music Assistant)

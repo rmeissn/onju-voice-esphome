@@ -151,6 +151,8 @@ One guided capture (sentences at 1 m, 3 m, loud at 30–50 cm; quiet and with mu
 
 ## Sound quality ("dull")
 
+This section is about the microphone side (what the voice assistant hears). For the music from the speaker (equalizer settings for Music Assistant) see [MUSIC_QUALITY.md](MUSIC_QUALITY.md).
+
 - Timbre per stage (1/3-octave bands): raw mic → AEC input ≤ 2 dB change (−4 dB at 630 Hz), AEC ≤ 1.3 dB, HA 0 dB. The loss is everything above 8 kHz (the 16 kHz pipeline), which removes the crispness of s/t sounds; the rest is mic, enclosure and room.
 - The 48 → 16 kHz conversion (`esp_ae_rate_cvt`, highest quality setting) is practically ideal: flat ±0.0 dB from 50 Hz to 7 kHz, −1..−1.6 dB at 7.6 kHz. A better resampler would gain nothing audible.
 
