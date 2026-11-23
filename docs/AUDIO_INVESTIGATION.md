@@ -176,6 +176,7 @@ No new clock scan; only look for problems:
 | --- | --- |
 | `tools/capture_audio.py` | receiver for `esp_audio_capture` |
 | `tools/analyze_capture.py` | per capture: integrity and raw I2S check, levels/clipping, SNR along the chain, echo coupling and AEC effect, speech preservation, left/right/average; `--compare` for variants with the same music; `--right-first` for both-slot captures; `--device-path avg` to skip the detection of the processed mic option |
+| `tools/mic_recommend.py` | runs `analyze_capture.py --lowbits-ok` on the manual mic-measurement capture(s) and decides left / right / average from the speaker leak difference D (echo coupling left - right at 1-3 kHz, music-only part; rules of thumb at 6 and 10 dB; checks: SNR in silence >= -5 dB vs average or self-noise fallback, speech result not worse than -3 dB, captures agree), see [SETUP_GUIDE.md](SETUP_GUIDE.md); invalid captures (period pattern, low bits with DC > -23 dBFS, gaps, < 5 s music without speech, echo not measurable) are not counted |
 | `tools/aec_delay.py` | echo delay as the AEC sees it, audio-loop cadence and device AEC reduction per capture, independent of the stream alignment (music-only captures) |
 | `tools/mic_check.sh` | bit check after a reboot or "Session restart": CORRECT / LATE / SLIPPING, restarts until CORRECT; `--count`, `--log=<device>.yaml`, `--ref=R,L`, offline `--analyze` |
 | `tools/r32_verdict.py`, `tools/raw32_bits.py` | exact verdict and bit view of 32-bit both-slot captures |

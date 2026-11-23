@@ -22,10 +22,7 @@ Code is inspired by https://github.com/tetele/onju-voice-satellite and https://g
 
 ## Getting started
 
-1. Copy `main.yaml` (one file per device), set `name` and `friendly_name` and choose one of the configurations under `packages`.
-2. Create a `secrets.yaml` with `wifi_ssid`, `wifi_password`, `fallback_ap_password` and `onju_ota`.
-3. Put the sound files into the `www` folder of Home Assistant (served as `/local/...`) and override the `*_sound_url` substitutions with the address of your Home Assistant instance. The sounds are downloaded at build time and stored on the device. They should be FLAC, mono, 48kHz (matching the speaker sample rate), highest compression. The sources of the sounds are listed in the substitutions.
-4. Build and flash (the first time via USB cable, afterwards via OTA). See the note on the partition table below.
+A detailed step-by-step guide for reusing this configuration is in [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md): flashing a general state, finding and setting your flash chip, using your own sounds (or the Voice PE sounds) and, optionally, finding out which of the two microphones is better for your unit.
 
 ### Partition table / OTA size
 
@@ -89,4 +86,4 @@ In earlier tests, using both microphones as a stereo signal reduced the signal-t
 * With esphome-audio-stack 2026.7, the wake word detection could stop after a while until the device was restarted (an I2S error permanently stopped the microphone). Since 2026.11 the audio path recovers, but only on the next start request. If this still happens, a wake word watchdog (described in a comment in `onju_duplex_i2s.yaml`) could restart the wake word automatically.
 * The automatic switch-off of a ringing timer (15 min) and of the alarm siren (5 min) uses a delay that isn't cancelled when it is triggered again, so a second timer within that time could be switched off early. A fix is described in a comment in the configurations.
 * Idea: also enable the `"stop"` wake word during long TTS replies or Home Assistant announcements (currently only active while a timer rings).
-* Note: microphone gain and the better microphone (left, right, or averaged) can vary per unit; [docs/AUDIO_INVESTIGATION.md](docs/AUDIO_INVESTIGATION.md) explains how to check another device.
+* Note: microphone gain and the better microphone (left, right, or averaged) can vary per unit; [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md#4-optional-find-out-which-microphone-is-better) explains how to measure your unit and override the microphone choice, [docs/AUDIO_INVESTIGATION.md](docs/AUDIO_INVESTIGATION.md) has the background.

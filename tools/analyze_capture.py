@@ -177,6 +177,7 @@ def to_fs(valid: np.ndarray, rate: int) -> np.ndarray:
 
 RIGHT_FIRST = False  # --right-first: raw_mic is [right, left]
 DEVICE_PATH = None  # --device-path: force the processed mic option instead of detecting it
+LOWBITS_OK = False  # --lowbits-ok: the low-bit criterion alone is no corruption (frequent false alarm at 16 bit)
 PHASE_PERIODS = (2, 3, 4)
 PHASE_MIN_LSB = 5.0  # healthy captures: < 0.5 LSB; corrupted period-3 captures: 50..1900 LSB
 PHASE_MIN_Z = 10.0
@@ -206,14 +207,15 @@ def check_raw(raw: np.ndarray) -> bool:
         bits_bad = max(abs(p - 0.5) for p in p_bits) > 0.05
         spreads = {per: phase_spread(v, per) for per in PHASE_PERIODS}
         phase_bad = [per for per, (s, nz) in spreads.items() if s > max(PHASE_MIN_LSB, PHASE_MIN_Z * nz)]
-        corrupt = bits_bad or bool(phase_bad)
+        corrupt = (bits_bad and not LOWBITS_OK) or bool(phase_bad)
         reasons = (["low bits"] if bits_bad else []) + [f"period {per}" for per in phase_bad]
         print(
             f"raw ch{c}: range {v.min()}..{v.max()}, std {v.std():.0f}, P(bit=1) bits 0-2 "
             + " ".join(f"{p:.2f}" for p in p_bits)
             + ", phase spread " + "/".join(f"{spreads[per][0]:.1f}" for per in PHASE_PERIODS)
             + f" LSB (period {'/'.join(map(str, PHASE_PERIODS))})"
-            + (f"  <-- LOOKS CORRUPTED (I2S read: {', '.join(reasons)})" if corrupt else "  ok")
+            + (f"  <-- LOOKS CORRUPTED (I2S read: {', '.join(reasons)})" if corrupt
+               else "  ok (low bits flagged, ignored: --lowbits-ok)" if bits_bad else "  ok")
         )
         any_corrupt |= corrupt
     return any_corrupt
@@ -677,10 +679,14 @@ def main() -> None:
     ap.add_argument("--device-path", choices=["left", "right", "avg"],
                     help="skip the automatic detection of the processed mic option (use it when both mics pick up "
                          "the same echo and the detection says 'device path unknown')")
+    ap.add_argument("--lowbits-ok", action="store_true",
+                    help="do not treat biased low bits alone as corruption (frequent false alarm with 16-bit raw data "
+                         "and a correct read); period patterns still do. Used by tools/mic_recommend.py")
     args = ap.parse_args()
-    global RIGHT_FIRST, DEVICE_PATH
+    global RIGHT_FIRST, DEVICE_PATH, LOWBITS_OK
     RIGHT_FIRST = args.right_first
     DEVICE_PATH = args.device_path
+    LOWBITS_OK = args.lowbits_ok
     print(f"bands {BANDS} Hz; levels in dBFS, ratios in dB")
     data = []
     for run in args.runs:
